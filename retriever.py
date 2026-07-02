@@ -5,10 +5,9 @@ import memory_store
 
 def rrf(rank_lists, k=60):
     scores = {}
-    for list_idx, lst in enumerate(rank_lists):
-        weight = 2 ** list_idx  # exponential boost for later lists
+    for lst in rank_lists:
         for rank, item in enumerate(lst):
-            scores[item] = scores.get(item, 0.0) + weight / (k + rank + 1)
+            scores[item] = scores.get(item, 0.0) + 1.0 / (k + rank + 1)
     return sorted(scores, key=lambda i: -scores[i])
 
 

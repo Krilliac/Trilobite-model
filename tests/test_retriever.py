@@ -4,8 +4,9 @@ import retriever as r
 
 
 def test_rrf_rewards_agreement():
-    # item "B" appears high in both lists -> should win.
-    fused = r.rrf([["A", "B", "C"], ["B", "A", "D"]])
+    # B appears in BOTH lists; A appears in only one (even at rank 0).
+    # Standard RRF rewards cross-list agreement, so B wins.
+    fused = r.rrf([["A", "B"], ["B", "C"]])
     assert fused[0] == "B"
 
 
