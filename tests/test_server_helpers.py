@@ -20,3 +20,10 @@ def test_resolve_trilobite_falls_back(monkeypatch):
 def test_resolve_trilobite_prefers_alias(monkeypatch):
     monkeypatch.setattr(server, "_get", lambda path: {"models": [{"name": "trilobite:latest"}]})
     assert server.resolve_trilobite_model() == "trilobite"
+
+
+def test_resolve_trilobite_soft_fails_when_ollama_down(monkeypatch):
+    def boom(path):
+        raise Exception("ollama down")
+    monkeypatch.setattr(server, "_get", boom)
+    assert server.resolve_trilobite_model() == server.TIERS["code"]

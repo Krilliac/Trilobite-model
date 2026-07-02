@@ -164,7 +164,7 @@ def offload(
             out = _post("/api/chat", payload)
         except urllib.error.URLError as e:
             return ("ERROR contacting Ollama at %s: %s. Is the Ollama server "
-                    "running? (`ollama serve`)" % (BASE, e))
+                    "running? (the tray app / `ollama serve`)" % (BASE, e))
         msg = out.get("message", {}).get("content", "")
         return msg if msg else "(empty response) raw=%s" % json.dumps(out)[:500]
 
@@ -175,7 +175,7 @@ def offload(
             response, iid = orchestrator.run_with_learning(_db(), prompt, tier, gen)
     except urllib.error.URLError as e:
         return ("ERROR contacting Ollama at %s: %s. Is the Ollama server "
-                "running? (`ollama serve`)" % (BASE, e))
+                "running? (the tray app / `ollama serve`)" % (BASE, e))
     return with_footer(response, iid)
 
 
@@ -209,7 +209,7 @@ def trilobite(
             )
     except urllib.error.URLError as e:
         return ("ERROR contacting Ollama at %s: %s. Is the Ollama server "
-                "running? (`ollama serve`)" % (BASE, e))
+                "running? (the tray app / `ollama serve`)" % (BASE, e))
     return with_footer(response, iid)
 
 
@@ -234,10 +234,13 @@ def record_outcome(interaction_id: str, signal: str) -> str:
         memory_store.record_outcome_row(conn, interaction_id, signal, r)
         lesson_id = None
         if reward.is_good(signal):
-            lesson_id = reflection.maybe_add_lesson(
-                conn, interaction_id, inter["task"], inter["response"], signal,
-                offload_fn=_generate_text, embed_fn=embeddings.embed,
-            )
+            try:
+                lesson_id = reflection.maybe_add_lesson(
+                    conn, interaction_id, inter["task"], inter["response"], signal,
+                    offload_fn=_generate_text, embed_fn=embeddings.embed,
+                )
+            except urllib.error.URLError:
+                lesson_id = None
     msg = "Recorded '%s' (reward %+.2f) for %s." % (signal, r, interaction_id)
     if lesson_id:
         msg += " Distilled lesson %s." % lesson_id
