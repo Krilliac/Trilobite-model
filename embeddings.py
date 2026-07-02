@@ -40,6 +40,7 @@ def embed(text, timeout=30):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8")).get("embedding")
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("embedding") if isinstance(data, dict) else None
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
         return None
