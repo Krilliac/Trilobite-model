@@ -71,3 +71,32 @@ def test_lesson_exists_for_interaction():
     assert ms.lesson_exists_for_interaction(c, "iX") is False
     ms.add_lesson(c, "L1", "text", None, "iX")
     assert ms.lesson_exists_for_interaction(c, "iX") is True
+
+
+def test_connect_uses_wal_on_file_db(tmp_path):
+    p = str(tmp_path / "wal.db")
+    c = ms.connect(p)
+    mode = c.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "wal"
+
+
+def test_concurrent_writes_from_threads(tmp_path):
+    import threading
+    p = str(tmp_path / "conc.db")
+    ms.connect(p)  # initialize schema/file
+    errors = []
+    def worker(n):
+        try:
+            conn = ms.connect(p)  # each thread its OWN connection
+            for i in range(5):
+                ms.log_interaction(conn, f"t{n}-{i}", "task", "", "resp", "code")
+            conn.close()
+        except Exception as e:  # noqa
+            errors.append(e)
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    assert errors == []
+    conn = ms.connect(p)
+    count = conn.execute("SELECT COUNT(*) FROM interactions").fetchone()[0]
+    assert count == 40  # 8 threads * 5 each

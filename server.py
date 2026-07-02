@@ -21,7 +21,6 @@ Tiers (escalation ladder, cheapest first):
 import json
 import os
 import re
-import threading
 import urllib.request
 import urllib.error
 
@@ -50,18 +49,13 @@ TIERS = {
 CLOUD_TIERS = {"cloud-code", "cloud-general"}
 
 _DB_PATH = os.path.join(os.path.dirname(__file__), "memory.db")
-_DB = None
-_LOCK = threading.Lock()
 
 FOOTER_PREFIX = "\n\n[interaction_id: "
 _FOOTER_RE = re.compile(r"\[interaction_id: ([0-9a-f]+)\]\s*$")
 
 
-def _db():
-    global _DB
-    if _DB is None:
-        _DB = memory_store.connect(_DB_PATH, check_same_thread=False)
-    return _DB
+def _open_db():
+    return memory_store.connect(_DB_PATH, check_same_thread=True)
 
 
 def with_footer(text, interaction_id):
@@ -170,12 +164,14 @@ def offload(
 
     # Learning path (local tiers only).
     gen = _make_generate(model, system, temperature, num_predict, num_ctx)
+    conn = _open_db()
     try:
-        with _LOCK:
-            response, iid = orchestrator.run_with_learning(_db(), prompt, tier, gen)
+        response, iid = orchestrator.run_with_learning(conn, prompt, tier, gen)
     except urllib.error.URLError as e:
         return ("ERROR contacting Ollama at %s: %s. Is the Ollama server "
                 "running? (the tray app / `ollama serve`)" % (BASE, e))
+    finally:
+        conn.close()
     return with_footer(response, iid)
 
 
@@ -205,14 +201,14 @@ def trilobite(
     else:
         model = TIERS.get(tier, resolve_trilobite_model())
     gen = _make_generate(model, system, temperature, num_predict, num_ctx)
+    conn = _open_db()
     try:
-        with _LOCK:
-            response, iid = orchestrator.run_with_learning(
-                _db(), prompt, "trilobite", gen
-            )
+        response, iid = orchestrator.run_with_learning(conn, prompt, "trilobite", gen)
     except urllib.error.URLError as e:
         return ("ERROR contacting Ollama at %s: %s. Is the Ollama server "
                 "running? (the tray app / `ollama serve`)" % (BASE, e))
+    finally:
+        conn.close()
     return with_footer(response, iid)
 
 
@@ -228,8 +224,8 @@ def record_outcome(interaction_id: str, signal: str) -> str:
     if signal not in reward.VALID_SIGNALS:
         return "ERROR: unknown signal '%s'. Valid: %s." % (
             signal, ", ".join(sorted(reward.VALID_SIGNALS)))
-    with _LOCK:
-        conn = _db()
+    conn = _open_db()
+    try:
         inter = memory_store.get_interaction(conn, interaction_id)
         if inter is None:
             return "ERROR: no interaction '%s' (already expired or wrong id)." % interaction_id
@@ -244,6 +240,8 @@ def record_outcome(interaction_id: str, signal: str) -> str:
                 )
             except urllib.error.URLError:
                 lesson_id = None
+    finally:
+        conn.close()
     msg = "Recorded '%s' (reward %+.2f) for %s." % (signal, r, interaction_id)
     if lesson_id:
         msg += " Distilled lesson %s." % lesson_id
