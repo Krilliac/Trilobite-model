@@ -133,3 +133,16 @@ def recent_lessons(conn, limit=5):
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def interactions_with_good_outcome(conn, good_signals):
+    if not good_signals:
+        return []
+    placeholders = ",".join("?" * len(good_signals))
+    rows = conn.execute(
+        "SELECT DISTINCT i.id, i.task, i.response FROM interactions i "
+        "JOIN outcomes o ON o.interaction_id = i.id "
+        "WHERE o.signal IN (%s)" % placeholders,
+        tuple(good_signals),
+    ).fetchall()
+    return [dict(r) for r in rows]

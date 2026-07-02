@@ -4,3 +4,4 @@ __pycache__/
 *.sqlite
 *.sqlite-*
 memory.db*
+training_data.jsonl

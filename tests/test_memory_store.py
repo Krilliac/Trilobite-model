@@ -140,3 +140,26 @@ def test_recent_lessons_returns_most_recent_first():
     assert lessons[0]["id"] == "L3"
     assert lessons[1]["id"] == "L2"
     assert set(lessons[0].keys()) >= {"id", "text", "ts"}
+
+
+def test_interactions_with_good_outcome_filters_by_signal():
+    c = _conn()
+    ms.log_interaction(c, "a", "task A", "", "resp A", "code")
+    ms.log_interaction(c, "b", "task B", "", "resp B", "code")
+    ms.log_interaction(c, "c", "task C", "", "resp C", "code")
+    ms.record_outcome_row(c, "a", "tests_passed", 1.0)
+    ms.record_outcome_row(c, "b", "failed", -1.0)
+    ms.record_outcome_row(c, "c", "compiled", 0.7)
+    good = ms.interactions_with_good_outcome(c, {"tests_passed", "compiled"})
+    ids = {g["id"] for g in good}
+    assert ids == {"a", "c"}
+    assert len(good) == 2
+    tasks = {g["task"] for g in good}
+    assert tasks == {"task A", "task C"}
+
+
+def test_interactions_with_good_outcome_empty_signals_returns_empty():
+    c = _conn()
+    ms.log_interaction(c, "a", "task A", "", "resp A", "code")
+    ms.record_outcome_row(c, "a", "tests_passed", 1.0)
+    assert ms.interactions_with_good_outcome(c, set()) == []
