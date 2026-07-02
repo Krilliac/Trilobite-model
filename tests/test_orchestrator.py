@@ -32,3 +32,37 @@ def test_run_with_learning_captures_and_returns_id():
     assert row["task"] == "fix the bug"
     assert row["response"] == "the answer"
     assert row["tier"] == "code"
+
+
+def test_run_with_learning_still_returns_2_tuple():
+    c = ms.connect(":memory:")
+    result = o.run_with_learning(
+        c, "fix the bug", "code", lambda prompt: "the answer",
+        retrieve_fn=lambda conn, task: ["prefer RRF"],
+        id_fn=lambda: "fixed123",
+    )
+    assert len(result) == 2
+    resp, iid = result
+    assert resp == "the answer"
+    assert iid == "fixed123"
+
+
+def test_run_with_learning_traced_returns_trace_context():
+    c = ms.connect(":memory:")
+    seen = {}
+
+    def gen(prompt):
+        seen["prompt"] = prompt
+        return "the answer"
+
+    resp, iid, trace = o.run_with_learning_traced(
+        c, "fix the bug", "code", gen,
+        retrieve_fn=lambda conn, task: ["prefer RRF"],
+        id_fn=lambda: "fixed123",
+    )
+    assert resp == "the answer"
+    assert iid == "fixed123"
+    assert trace["lessons"] == ["prefer RRF"]
+    assert "prefer RRF" in trace["augmented_prompt"]
+    assert "fix the bug" in trace["augmented_prompt"]
+    assert trace["augmented_prompt"] == seen["prompt"]

@@ -29,9 +29,30 @@ def test_resolve_trilobite_soft_fails_when_ollama_down(monkeypatch):
     assert server.resolve_trilobite_model() == server.TIERS["code"]
 
 
-def test_trilobite_rejects_cloud_tier():
-    out = server.trilobite("hi", tier="cloud-code")
-    assert "local-only" in out
+def test_resolve_trilobite_strict_true_prefers_alias(monkeypatch):
+    monkeypatch.setattr(server, "_get", lambda path: {"models": [{"name": "trilobite:latest"}]})
+    assert server.resolve_trilobite_model(strict=True) == "trilobite"
+
+
+def test_resolve_trilobite_strict_true_alias_absent_returns_none(monkeypatch):
+    monkeypatch.setattr(server, "_get", lambda path: {"models": [{"name": "qwen2.5:3b"}]})
+    assert server.resolve_trilobite_model(strict=True) is None
+
+
+def test_resolve_trilobite_strict_false_alias_absent_falls_back(monkeypatch):
+    monkeypatch.setattr(server, "_get", lambda path: {"models": [{"name": "qwen2.5:3b"}]})
+    assert server.resolve_trilobite_model(strict=False) == server.TIERS["code"]
+
+
+def test_trilobite_strict_true_errors_when_alias_missing_before_any_ollama_call(monkeypatch):
+    monkeypatch.setattr(server, "_get", lambda path: {"models": [{"name": "qwen2.5:3b"}]})
+
+    def boom_post(path, payload):
+        raise AssertionError("must not call Ollama when strict + alias missing")
+    monkeypatch.setattr(server, "_post", boom_post)
+
+    out = server.trilobite("hi", strict=True)
+    assert "not found" in out
 
 
 def test_should_learn_only_code_tier():
@@ -47,3 +68,23 @@ def test_trilobite_stats_runs_against_empty_db(monkeypatch, tmp_path):
     out = server.trilobite_stats()
     assert isinstance(out, str)
     assert "lessons:" in out
+
+
+def test_format_trace_contains_model_lessons_and_prompt():
+    trace = {"lessons": ["prefer RRF", "avoid globals"], "augmented_prompt": "# Task:\nfix the bug"}
+    params = {"temperature": 0.2, "num_predict": 1024, "num_ctx": 4096}
+    out = server._format_trace("trilobite", "code", params, trace)
+    assert "trilobite" in out
+    assert "lessons retrieved: 2" in out
+    assert "prefer RRF" in out
+    assert "avoid globals" in out
+    assert "# Task:\nfix the bug" in out
+
+
+def test_format_trace_roundtrip_with_footer_does_not_break_id_parsing():
+    trace = {"lessons": ["prefer RRF"], "augmented_prompt": "# Task:\nfix the bug"}
+    params = {"temperature": 0.2, "num_predict": 1024, "num_ctx": 4096}
+    trace_block = server._format_trace("trilobite", "code", params, trace)
+    # Mirrors the real tool's ordering: answer, then trace block, then footer LAST.
+    body = server.with_footer("answer" + trace_block, "abcd1234")
+    assert server.parse_interaction_id(body) == "abcd1234"

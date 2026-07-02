@@ -48,6 +48,11 @@ TIERS = {
 # Tiers whose ":...-cloud" model runs on Ollama's servers (data leaves the machine).
 CLOUD_TIERS = {"cloud-code", "cloud-general"}
 
+# strict=True pins trilobite to the fine-tuned alias only (errors if missing) instead
+# of silently falling back to the base coder model. Env default lets ops flip this
+# machine-wide without touching call sites.
+_STRICT_DEFAULT = os.environ.get("TRILOBITE_STRICT", "").strip().lower() in ("1", "true", "yes", "on")
+
 _DB_PATH = os.path.join(os.path.dirname(__file__), "memory.db")
 
 FOOTER_PREFIX = "\n\n[interaction_id: "
@@ -67,20 +72,45 @@ def parse_interaction_id(text):
     return m.group(1) if m else None
 
 
+TRACE_SYSTEM = (
+    "Before giving your answer, output a section titled '## Reasoning' where you "
+    "think step by step: restate the task in your own words, note constraints and "
+    "edge cases, and explain your approach and any tradeoffs. Then output a section "
+    "titled '## Answer' with the final solution."
+)
+
+
+def _format_trace(model, tier, params, trace):
+    lessons = trace.get("lessons", [])
+    lines = [
+        "",
+        "=== TRACE (how trilobite decided) ===",
+        "model: %s   tier: %s" % (model, tier),
+        "generation params: %r" % (params,),
+        "lessons retrieved: %d" % len(lessons),
+    ]
+    for l in lessons:
+        lines.append("   - %s" % l)
+    lines.append("--- exact prompt sent to the model ---")
+    lines.append(trace.get("augmented_prompt", ""))
+    lines.append("=== END TRACE ===")
+    return "\n".join(lines)
+
+
 def _should_learn(tier, learn):
     # Only the local coding tier participates in the coding-lesson loop.
     # Excludes cloud tiers (tier != "code"), mechanical fast/general, and learn=False.
     return bool(learn) and tier == "code"
 
 
-def resolve_trilobite_model():
+def resolve_trilobite_model(strict=False):
     try:
         tags = [m.get("name", "") for m in _get("/api/tags").get("models", [])]
     except Exception:
         tags = []
     if any(t.split(":")[0] == "trilobite" for t in tags):
         return "trilobite"
-    return TIERS["code"]
+    return None if strict else TIERS["code"]
 
 
 def _make_generate(model, system, temperature, num_predict, num_ctx):
@@ -170,8 +200,13 @@ def offload(
         msg = out.get("message", {}).get("content", "")
         return msg if msg else "(empty response) raw=%s" % json.dumps(out)[:500]
 
-    # Learning path (local tiers only).
-    gen = _make_generate(model, system, temperature, num_predict, num_ctx)
+    # Learning path (local tiers only) — serves from the same trilobite model as the
+    # trilobite tool, so the learning loop is consistent across entry points.
+    learning_model = resolve_trilobite_model(_STRICT_DEFAULT)
+    if learning_model is None:
+        return ("ERROR: trilobite model/alias not found. Run setup_alias.py, or call "
+                "with strict=False to fall back to the base coder.")
+    gen = _make_generate(learning_model, system, temperature, num_predict, num_ctx)
     conn = _open_db()
     try:
         response, iid = orchestrator.run_with_learning(conn, prompt, tier, gen)
@@ -186,11 +221,12 @@ def offload(
 @mcp.tool()
 def trilobite(
     prompt: str,
-    tier: str = "code",
     system: str = "",
     temperature: float = 0.2,
     num_predict: int = 1024,
     num_ctx: int = 4096,
+    trace: bool = False,
+    strict: bool = None,
 ) -> str:
     """Ask 'trilobite', the local self-improving coding model, for help.
 
@@ -199,24 +235,51 @@ def trilobite(
     on the 4050, captured, and returned with a '[interaction_id: <id>]' footer.
     After you learn how it went, call record_outcome(<id>, "tests_passed" | "accepted"
     | "compiled" | "rejected" | "failed") so trilobite gets better over time.
-    Defaults to the 7B coder / the 'trilobite' Ollama alias if it exists.
+    trilobite is local-only and always uses the local coder model/alias — it never
+    routes to another tier or the cloud; use offload for that.
+    Defaults to the 7B coder base model, or the 'trilobite' Ollama alias if it exists.
+
+    trace=True instructs the model to externalize its step-by-step reasoning
+    ('## Reasoning' then '## Answer'), and appends a TRACE block showing the
+    SYSTEM's actual decision context: which lessons were retrieved, the exact
+    augmented prompt sent to the model, the model/tier used, and the generation
+    params. Default (trace=False) behavior is unchanged.
+
+    strict=True (or env TRILOBITE_STRICT=1) pins this call to the fine-tuned
+    'trilobite' alias only, and returns an error if that alias isn't installed,
+    instead of silently falling back to the base coder model. Default (strict=False
+    / unset) keeps today's fallback behavior.
     """
-    if tier in CLOUD_TIERS:
-        return ("ERROR: trilobite is local-only (private lessons must not leave "
-                "the machine). Use offload for cloud tiers.")
-    if tier == "code":
-        model = resolve_trilobite_model()
-    else:
-        model = TIERS.get(tier, resolve_trilobite_model())
-    gen = _make_generate(model, system, temperature, num_predict, num_ctx)
+    strict_eff = _STRICT_DEFAULT if strict is None else strict
+    model = resolve_trilobite_model(strict_eff)
+    if model is None:
+        return ("ERROR: trilobite model/alias not found. Run setup_alias.py, or call "
+                "with strict=False to fall back to the base coder.")
+
+    effective_system = system
+    if trace:
+        effective_system = "%s\n\n%s" % (system, TRACE_SYSTEM) if system else TRACE_SYSTEM
+
+    gen = _make_generate(model, effective_system, temperature, num_predict, num_ctx)
     conn = _open_db()
     try:
-        response, iid = orchestrator.run_with_learning(conn, prompt, "trilobite", gen)
+        if trace:
+            response, iid, trace_ctx = orchestrator.run_with_learning_traced(
+                conn, prompt, "trilobite", gen
+            )
+        else:
+            response, iid = orchestrator.run_with_learning(conn, prompt, "trilobite", gen)
     except urllib.error.URLError as e:
         return ("ERROR contacting Ollama at %s: %s. Is the Ollama server "
                 "running? (the tray app / `ollama serve`)" % (BASE, e))
     finally:
         conn.close()
+
+    if trace:
+        params = {"temperature": temperature, "num_predict": num_predict, "num_ctx": num_ctx}
+        trace_block = _format_trace(model, "trilobite", params, trace_ctx)
+        # Footer must stay LAST so parse_interaction_id's $-anchored regex still finds it.
+        return with_footer(response + trace_block, iid)
     return with_footer(response, iid)
 
 
