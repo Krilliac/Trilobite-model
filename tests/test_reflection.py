@@ -43,3 +43,29 @@ def test_maybe_add_lesson_skips_empty_distill():
         offload_fn=lambda **kw: "   ", embed_fn=lambda t: [1.0, 0.0],
     )
     assert lid is None
+
+
+def test_maybe_add_lesson_dedupes_near_but_not_exact(monkeypatch):
+    c = ms.connect(":memory:")
+    ms.add_lesson(c, "existing", "Always release the lock.",
+                  e.to_blob([1.0, 0.0]), "i0")
+    # new interaction i1, different text, embedding cosine ~0.98 vs existing
+    lid = reflection.maybe_add_lesson(
+        c, "i1", "task", "resp", "tests_passed",
+        offload_fn=lambda **kw: "Release locks promptly.",
+        embed_fn=lambda t: [0.98, 0.199],
+    )
+    assert lid is None
+    assert len(ms.all_lessons(c)) == 1
+
+
+def test_maybe_add_lesson_stores_when_embeddings_unavailable():
+    c = ms.connect(":memory:")
+    lid = reflection.maybe_add_lesson(
+        c, "i9", "task", "resp", "tests_passed",
+        offload_fn=lambda **kw: "A useful lesson.",
+        embed_fn=lambda t: None,  # embeddings unavailable
+    )
+    assert lid is not None
+    stored = ms.all_lessons(c)[0]
+    assert stored["embedding"] is None

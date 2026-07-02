@@ -55,3 +55,19 @@ def test_fts_search_empty_query_returns_empty():
     c = _conn()
     ms.add_lesson(c, "L1", "anything", None, "a")
     assert ms.fts_search(c, "a to") == []  # only short/stopword tokens -> no query
+
+
+def test_fts_search_ranks_more_relevant_first():
+    c = _conn()
+    ms.add_lesson(c, "L1", "use RRF fusion for hybrid retrieval ranking", None, "a")
+    ms.add_lesson(c, "L2", "a hybrid approach", None, "b")
+    hits = ms.fts_search(c, "hybrid retrieval fusion")
+    assert "L1" in hits and "L2" in hits
+    assert hits.index("L1") < hits.index("L2")  # L1 matches more query terms
+
+
+def test_lesson_exists_for_interaction():
+    c = _conn()
+    assert ms.lesson_exists_for_interaction(c, "iX") is False
+    ms.add_lesson(c, "L1", "text", None, "iX")
+    assert ms.lesson_exists_for_interaction(c, "iX") is True

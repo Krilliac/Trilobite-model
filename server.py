@@ -29,7 +29,7 @@ import memory_store
 import orchestrator
 import reward
 import reflection
-import embeddings  # noqa: F401  (ensures module import side-effects/config load)
+import embeddings
 
 from mcp.server.fastmcp import FastMCP
 
@@ -197,6 +197,9 @@ def trilobite(
     | "compiled" | "rejected" | "failed") so trilobite gets better over time.
     Defaults to the 7B coder / the 'trilobite' Ollama alias if it exists.
     """
+    if tier in CLOUD_TIERS:
+        return ("ERROR: trilobite is local-only (private lessons must not leave "
+                "the machine). Use offload for cloud tiers.")
     if tier == "code":
         model = resolve_trilobite_model()
     else:

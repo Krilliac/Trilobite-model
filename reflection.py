@@ -18,7 +18,7 @@ def distill(task, response, signal, offload_fn):
     )
     text = offload_fn(
         prompt=prompt, tier="fast", system=DISTILL_SYSTEM,
-        temperature=0.2, num_predict=60,
+        temperature=0.0, num_predict=60,
     )
     return (text or "").strip()
 
@@ -35,6 +35,8 @@ def is_duplicate(new_emb, conn, threshold=DUP_THRESHOLD):
 
 def maybe_add_lesson(conn, interaction_id, task, response, signal, offload_fn,
                      embed_fn=embeddings.embed, id_fn=memory_store.new_id):
+    if memory_store.lesson_exists_for_interaction(conn, interaction_id):
+        return None
     text = distill(task, response, signal, offload_fn)
     if not text:
         return None

@@ -80,6 +80,14 @@ def add_lesson(conn, lesson_id, text, embedding, source_interaction):
     conn.commit()
 
 
+def lesson_exists_for_interaction(conn, interaction_id):
+    row = conn.execute(
+        "SELECT 1 FROM lessons WHERE source_interaction=? LIMIT 1",
+        (interaction_id,),
+    ).fetchone()
+    return row is not None
+
+
 def all_lessons(conn):
     rows = conn.execute("SELECT id, text, embedding FROM lessons").fetchall()
     return [dict(r) for r in rows]

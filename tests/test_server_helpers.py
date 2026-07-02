@@ -27,3 +27,8 @@ def test_resolve_trilobite_soft_fails_when_ollama_down(monkeypatch):
         raise Exception("ollama down")
     monkeypatch.setattr(server, "_get", boom)
     assert server.resolve_trilobite_model() == server.TIERS["code"]
+
+
+def test_trilobite_rejects_cloud_tier():
+    out = server.trilobite("hi", tier="cloud-code")
+    assert "local-only" in out
