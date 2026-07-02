@@ -162,6 +162,106 @@ TASKS = [
     {"name": "longest_word",
      "prompt": "Write a Python function named `longest_word(s)` that returns the longest whitespace-separated word in s (first one wins ties). Return ONLY the function in one python code block.",
      "check": "assert longest_word('the quick brown fox') == 'quick'\nassert longest_word('a bb') == 'bb'"},
+
+    {"name": "count_words",
+     "prompt": "Write a Python function named `count_words(s)` that returns the number of whitespace-separated words in s (0 for an empty or whitespace-only string). Return ONLY the function in one python code block.",
+     "check": "assert count_words('the quick brown fox') == 4\nassert count_words('') == 0\nassert count_words('   ') == 0"},
+
+    {"name": "flatten_deep",
+     "prompt": "Write a Python function named `flatten_deep(nested)` that recursively flattens a list containing lists nested to any depth into a single flat list, preserving order. Return ONLY the function in one python code block.",
+     "check": "assert flatten_deep([1,[2,[3,[4,5]],6],7]) == [1,2,3,4,5,6,7]\nassert flatten_deep([]) == []\nassert flatten_deep([1,2,3]) == [1,2,3]"},
+
+    {"name": "unique_paths",
+     "prompt": "Write a Python function named `unique_paths(m, n)` that returns the number of distinct paths from the top-left to the bottom-right corner of an m-row by n-column grid, moving only right or down. Return ONLY the function in one python code block.",
+     "check": "assert unique_paths(3, 7) == 28\nassert unique_paths(1, 1) == 1\nassert unique_paths(3, 2) == 3"},
+
+    {"name": "gcd_list",
+     "prompt": "Write a Python function named `gcd_list(nums)` that returns the greatest common divisor of a non-empty list of positive integers. Return ONLY the function in one python code block.",
+     "check": "assert gcd_list([12, 18, 24]) == 6\nassert gcd_list([7]) == 7\nassert gcd_list([8, 12]) == 4"},
+
+    # Note: "eval()"/"exec()" below appear only as prose in the task prompt, telling the
+    # MODEL not to use them (it must hand-write a real parser). No eval/exec is invoked by
+    # this training harness itself — grounding.run_code executes the model's submission in
+    # an isolated subprocess, same as every other task's check.
+    {"name": "eval_expr",
+     "prompt": "Write a Python function named `eval_expr(expr)` that evaluates a string arithmetic expression containing integers, '+', '-', '*', '/', and parentheses, respecting standard operator precedence, WITHOUT using eval() or exec(). Return the numeric result. Return ONLY the function in one python code block.",
+     "check": "assert eval_expr('3 + 4 * 2') == 11\nassert eval_expr('(1 + 2) * (3 + 4)') == 21\nassert eval_expr('10 - 2 - 3') == 5\nassert eval_expr('2 * (3 + 4 * (5 - 2))') == 30"},
+
+    {"name": "int_to_roman",
+     "prompt": "Write a Python function named `int_to_roman(n)` that converts an integer (1-3999) to its Roman numeral string representation. Return ONLY the function in one python code block.",
+     "check": "assert int_to_roman(3) == 'III'\nassert int_to_roman(58) == 'LVIII'\nassert int_to_roman(1994) == 'MCMXCIV'\nassert int_to_roman(9) == 'IX'"},
+
+    {"name": "LRUCache",
+     "prompt": "Write a Python class named `LRUCache` implementing a least-recently-used cache with `__init__(self, capacity)`, `get(self, key)` (returns the value or -1 if absent, and marks the key as recently used), and `put(self, key, value)` (inserts/updates a key, marking it recently used, and evicts the least-recently-used key if capacity is exceeded). Return ONLY the class definition in one python code block.",
+     "check": "c = LRUCache(2)\nc.put(1, 1)\nc.put(2, 2)\nassert c.get(1) == 1\nc.put(3, 3)\nassert c.get(2) == -1\nc.put(4, 4)\nassert c.get(1) == -1\nassert c.get(3) == 3\nassert c.get(4) == 4"},
+
+    {"name": "lcs_length",
+     "prompt": "Write a Python function named `lcs_length(a, b)` that returns the length of the longest common subsequence of strings a and b. Return ONLY the function in one python code block.",
+     "check": "assert lcs_length('abcde', 'ace') == 3\nassert lcs_length('abc', 'abc') == 3\nassert lcs_length('abc', 'def') == 0"},
+
+    {"name": "sudoku_row_valid",
+     "prompt": "Write a Python function named `sudoku_row_valid(row)` that takes a list of 9 integers (0 meaning empty, 1-9 meaning filled) representing one Sudoku row and returns True if there are no duplicate non-zero digits, False otherwise. Return ONLY the function in one python code block.",
+     "check": "assert sudoku_row_valid([5,3,0,0,7,0,0,0,0]) is True\nassert sudoku_row_valid([5,3,0,0,7,0,5,0,0]) is False\nassert sudoku_row_valid([0,0,0,0,0,0,0,0,0]) is True"},
+
+    {"name": "json_flatten",
+     "prompt": "Write a Python function named `json_flatten(d)` that flattens a nested dict into a single-level dict whose keys are dotted paths, e.g. {'a': {'b': 1, 'c': 2}, 'd': 3} -> {'a.b': 1, 'a.c': 2, 'd': 3}. Return ONLY the function in one python code block.",
+     "check": "assert json_flatten({'a': {'b': 1, 'c': 2}, 'd': 3}) == {'a.b': 1, 'a.c': 2, 'd': 3}\nassert json_flatten({}) == {}\nassert json_flatten({'x': {'y': {'z': 5}}}) == {'x.y.z': 5}"},
+
+    {"name": "base64_encode_manual",
+     "prompt": "Write a Python function named `base64_encode_manual(s)` that base64-encodes the UTF-8 bytes of string s and returns the standard base64 string (with '=' padding), WITHOUT using the base64 module. Return ONLY the function in one python code block.",
+     "check": "import base64\nassert base64_encode_manual('hello') == base64.b64encode(b'hello').decode()\nassert base64_encode_manual('') == ''\nassert base64_encode_manual('Man is distinguished') == base64.b64encode(b'Man is distinguished').decode()"},
+
+    {"name": "topological_sort",
+     "prompt": "Write a Python function named `topological_sort(graph)` where graph is a dict mapping each node to a list of nodes that must come AFTER it (its dependents). Return a list containing all nodes in an order that respects every such ordering constraint. Return ONLY the function in one python code block.",
+     "check": "graph = {'a': ['b', 'c'], 'b': ['d'], 'c': ['d'], 'd': []}\norder = topological_sort(graph)\nassert set(order) == set(graph.keys())\npos = {n: i for i, n in enumerate(order)}\nfor u, deps in graph.items():\n    for v in deps:\n        assert pos[u] < pos[v]"},
+
+    {"name": "prime_factors",
+     "prompt": "Write a Python function named `prime_factors(n)` that returns a sorted list of the prime factors of n (with multiplicity), or an empty list for n <= 1. Return ONLY the function in one python code block.",
+     "check": "assert prime_factors(60) == [2,2,3,5]\nassert prime_factors(17) == [17]\nassert prime_factors(1) == []"},
+
+    {"name": "run_length_decode",
+     "prompt": "Write a Python function named `run_length_decode(s)` that decodes a run-length-encoded string like 'a3b2c1' back to 'aaabbc'. Return ONLY the function in one python code block.",
+     "check": "assert run_length_decode('a3b2c1') == 'aaabbc'\nassert run_length_decode('') == ''"},
+
+    {"name": "levenshtein_distance",
+     "prompt": "Write a Python function named `levenshtein_distance(a, b)` that returns the minimum number of single-character insertions, deletions, or substitutions needed to change string a into string b. Return ONLY the function in one python code block.",
+     "check": "assert levenshtein_distance('kitten', 'sitting') == 3\nassert levenshtein_distance('', 'abc') == 3\nassert levenshtein_distance('abc', 'abc') == 0"},
+
+    {"name": "is_subsequence",
+     "prompt": "Write a Python function named `is_subsequence(s, t)` that returns True if s is a subsequence of t (characters of s appear in t in the same relative order, not necessarily contiguous), False otherwise. Return ONLY the function in one python code block.",
+     "check": "assert is_subsequence('ace', 'abcde') is True\nassert is_subsequence('aec', 'abcde') is False\nassert is_subsequence('', 'abc') is True"},
+
+    {"name": "matrix_multiply",
+     "prompt": "Write a Python function named `matrix_multiply(a, b)` that multiplies two 2D matrices (lists of lists of numbers) and returns the resulting matrix. Return ONLY the function in one python code block.",
+     "check": "assert matrix_multiply([[1,2],[3,4]], [[5,6],[7,8]]) == [[19,22],[43,50]]\nassert matrix_multiply([[1,0],[0,1]], [[9,8],[7,6]]) == [[9,8],[7,6]]"},
+
+    {"name": "binary_to_decimal",
+     "prompt": "Write a Python function named `binary_to_decimal(s)` that converts a string of '0'/'1' characters to its decimal integer value. Return ONLY the function in one python code block.",
+     "check": "assert binary_to_decimal('1010') == 10\nassert binary_to_decimal('0') == 0\nassert binary_to_decimal('11111111') == 255"},
+
+    {"name": "decimal_to_binary",
+     "prompt": "Write a Python function named `decimal_to_binary(n)` that converts a non-negative integer n to its binary string representation with no '0b' prefix and no leading zeros (except that 0 itself maps to '0'). Return ONLY the function in one python code block.",
+     "check": "assert decimal_to_binary(10) == '1010'\nassert decimal_to_binary(0) == '0'\nassert decimal_to_binary(255) == '11111111'"},
+
+    {"name": "is_valid_ipv4",
+     "prompt": "Write a Python function named `is_valid_ipv4(s)` that returns True if s is a syntactically valid IPv4 address (exactly 4 dot-separated numeric octets, each an integer from 0 to 255), False otherwise. Return ONLY the function in one python code block.",
+     "check": "assert is_valid_ipv4('192.168.1.1') is True\nassert is_valid_ipv4('256.1.1.1') is False\nassert is_valid_ipv4('1.2.3') is False\nassert is_valid_ipv4('a.b.c.d') is False"},
+
+    {"name": "kth_smallest",
+     "prompt": "Write a Python function named `kth_smallest(nums, k)` that returns the k-th smallest element (1-indexed) in a list of numbers. Return ONLY the function in one python code block.",
+     "check": "assert kth_smallest([7,10,4,3,20,15], 3) == 7\nassert kth_smallest([1], 1) == 1"},
+
+    {"name": "merge_intervals",
+     "prompt": "Write a Python function named `merge_intervals(intervals)` that takes a list of [start, end] interval pairs and returns a new list with all overlapping or touching intervals merged, sorted by start. Return ONLY the function in one python code block.",
+     "check": "assert merge_intervals([[1,3],[2,6],[8,10],[15,18]]) == [[1,6],[8,10],[15,18]]\nassert merge_intervals([[1,4],[4,5]]) == [[1,5]]"},
+
+    {"name": "two_sum",
+     "prompt": "Write a Python function named `two_sum(nums, target)` that returns a list of two indices [i, j] (i != j) such that nums[i] + nums[j] == target, assuming exactly one solution exists. Return ONLY the function in one python code block.",
+     "check": "assert sorted(two_sum([2,7,11,15], 9)) == [0,1]\nassert sorted(two_sum([3,2,4], 6)) == [1,2]"},
+
+    {"name": "max_subarray_sum",
+     "prompt": "Write a Python function named `max_subarray_sum(nums)` that returns the largest possible sum of a contiguous, non-empty subarray of nums (Kadane's algorithm). Return ONLY the function in one python code block.",
+     "check": "assert max_subarray_sum([-2,1,-3,4,-1,2,1,-5,4]) == 6\nassert max_subarray_sum([1]) == 1\nassert max_subarray_sum([5,4,-1,7,8]) == 23"},
 ]
 
 
