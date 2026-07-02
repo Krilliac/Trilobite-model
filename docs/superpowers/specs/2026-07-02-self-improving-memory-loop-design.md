@@ -26,11 +26,22 @@ manual babysitting. Decomposed into four sub-projects, built in dependency order
   sub-project #4 only (decode-level control), not needed now.
 - **The model is always a frozen endpoint.** All "learning" lives in an
   **orchestrator around** the server. Nothing mutates weights in this slice.
-- **Entry point (mode A):** the loop rides on the existing `offload` traffic.
-  Every offloaded coding subtask is transparently captured, memory-augmented, and
-  later scored. No new UI, no new habit. It learns only from offloaded work — that
-  is an accepted limitation of this slice (a deliberate standalone CLI is a possible
-  phase-2, sub-project not scoped here).
+- **Entry points (mode A), two front doors onto the same loop:**
+  - **Fleet/offload traffic** — the existing `offload` tool is transparently
+    wrapped: every offloaded coding subtask is memory-augmented, captured, and
+    later scored. No new habit for fleets.
+  - **General interactive sessions** — a first-class `trilobite` MCP tool
+    (`mcp__local-llm__trilobite`) that a normal (non-fleet) session references
+    directly ("use trilobite"). Same loop, interactive defaults.
+  Both learn only from work that flows through them — an accepted limitation of
+  this slice.
+- **Named identity vs. learning wrapper (important distinction):** Ollama only
+  ever serves *frozen* weights, so the self-learning behavior lives entirely in
+  the MCP orchestrator, never in an Ollama model. We still register an Ollama
+  alias `trilobite` (Modelfile `FROM` the code-tier base) as a **stable
+  named identity**: it shows in `ollama list`/`status`, the `learned` tool points
+  at it, and sub-project #3's fine-tune loop later **republishes it as v2, v3…**.
+  So the *name you reference stays constant while the weights behind it improve*.
 - **Privacy:** all local tiers. Embeddings via a local Ollama embed model. Private
   code never leaves the box. No cloud tier touches captured data.
 
@@ -93,6 +104,24 @@ Wrap the existing `offload` body:
 4. Learning is gated by a new `learn: bool = True` arg so a caller can opt out
    (e.g. throwaway reformatting) and get the old pure-text behavior.
 
+### General-session entry point (`trilobite` tool + Ollama alias)
+A new MCP tool `trilobite(prompt, tier="code", system="", temperature=0.2,
+num_predict=1024, num_ctx=4096) -> str` — the front door for normal interactive
+sessions. It is a thin ergonomic wrapper over the same capture path used by the
+wrapped `offload`:
+- Defaults to the `code` tier (interactive coding help), always `learn=True`.
+- Runs retrieval → Ollama → capture, returns the answer + `[interaction_id: <id>]`
+  footer, so the session can `record_outcome` on it exactly like fleet traffic.
+- Targets the Ollama alias `trilobite` rather than a raw tier model name.
+
+**Ollama alias `trilobite`** — created once via a Modelfile
+(`FROM qwen2.5-coder:7b`, carrying default system/params). Purpose is a *stable
+named identity*, not new behavior: it appears in `ollama list` and `status`, gives
+the user a name to reference, and becomes the artifact sub-project #3 republishes
+as improved versions. A tiny setup step (`setup_alias.py` or a documented
+`ollama create` command) creates it; the tool degrades to the raw `code` model if
+the alias is absent, so the loop never hard-depends on it.
+
 ### Reward harvester (`reward.py` + `record_outcome` tool)
 New MCP tool: `record_outcome(interaction_id: str, signal: str) -> str`.
 - `signal ∈ {compiled, tests_passed, accepted, rejected, failed}` → scalar reward
@@ -141,6 +170,9 @@ Deterministic unit tests per module, no live-Ollama dependency in core tests
   lexical-vs-semantic cases; assert lexical-only fallback when embeddings stubbed off.
 - `offload` capture: asserts a row is written and the returned text ends with a
   parseable `[interaction_id: ...]` footer; `learn=False` writes nothing and omits footer.
+- `trilobite` tool: shares the capture path — same footer/row assertions as
+  wrapped `offload`; asserts it falls back to the raw `code` model when the
+  `trilobite` Ollama alias is absent.
 - `record_outcome`: updates reward; unknown id handled gracefully.
 - `reflection`: with a stubbed model call, a good outcome writes exactly one
   deduped lesson; a bad outcome writes none.
