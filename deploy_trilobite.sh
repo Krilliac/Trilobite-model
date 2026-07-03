@@ -8,7 +8,13 @@ set -euo pipefail
 
 echo "== 1/4 Ollama =="
 if ! command -v ollama >/dev/null 2>&1; then
-  curl -fsSL https://ollama.com/install.sh | sh
+  # Download the official installer to a file first so it CAN be inspected,
+  # rather than piping a remote script straight into a root shell.
+  INSTALLER="$(mktemp)"
+  curl -fsSL https://ollama.com/install.sh -o "$INSTALLER"
+  echo "Ollama installer downloaded to $INSTALLER (review it if you like), running it..."
+  sh "$INSTALLER"
+  rm -f "$INSTALLER"
 fi
 # make sure the server is up
 (systemctl start ollama 2>/dev/null || (nohup ollama serve >/var/log/ollama.log 2>&1 &)) || true
@@ -27,14 +33,16 @@ ollama pull "$BASE"
 ollama pull nomic-embed-text
 
 echo "== 4/4 create the self-aware trilobite alias =="
-cat > /tmp/Trilobite.modelfile <<EOF
+MF="$(mktemp)"
+cat > "$MF" <<EOF
 FROM $BASE
 PARAMETER temperature 0.2
 SYSTEM """You are trilobite, a self-improving coding assistant that runs entirely locally on this machine through Ollama. There is no external server and no cloud, all inference happens here, privately. You are built on a Qwen2.5-Coder base, wrapped by a local system that gives you a growing memory of short 'lessons' distilled from past coding work; relevant lessons are retrieved and added to new tasks, and solutions that pass real tests are recorded so their lessons get reused. That is how you improve over time.
 
 Be direct, honest, and concrete. Never fabricate capabilities, tools, or configuration you do not have: you have no web search, no web fetch, and no toggleable feature flags, do not invent JSON like that. When asked about yourself, describe what you actually are (above). You cannot read your own neural internals, so do not claim to, but do not fall back on canned 'as an AI language model I cannot' refusals either; just answer plainly and usefully. Prefer correct, working code and keep answers concise."""
 EOF
-ollama create trilobite -f /tmp/Trilobite.modelfile
+ollama create trilobite -f "$MF"
+rm -f "$MF"
 
 echo ""
 echo "DONE. trilobite is live on this box."
