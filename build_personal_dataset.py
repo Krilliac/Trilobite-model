@@ -80,11 +80,29 @@ def parse_git_log(log_text):
     return commits
 
 
+_TRAILER_RE = re.compile(
+    r"^\s*(?:Co-Authored-By|Co-authored-by|Signed-off-by|Claude-Session|"
+    r"Generated with|Reviewed-by|Acked-by)\s*:", re.IGNORECASE)
+
+
+def _strip_trailers(body):
+    """Drop commit trailers (Co-Authored-By, Claude-Session, 🤖 links, etc.) so a
+    'why was this changed?' answer is the real rationale, not boilerplate."""
+    kept = []
+    for line in (body or "").splitlines():
+        if _TRAILER_RE.match(line):
+            continue
+        if "claude.ai/code" in line or line.strip().startswith("🤖"):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
 def commit_pairs(commits, project):
     """Turn commits with a non-trivial body into rationale training pairs."""
     pairs = []
     for c in commits:
-        body = (c.get("body") or "").strip()
+        body = _strip_trailers((c.get("body") or "").strip())
         if len(body) < 30:
             continue
         subject = (c.get("subject") or "").strip()

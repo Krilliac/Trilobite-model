@@ -199,3 +199,21 @@ def test_impl_pairs_skips_units_without_body():
 def test_no_pairs_no_crash_on_empty_units():
     assert bpd.doc_pairs([], "p", "cpp") == []
     assert bpd.impl_pairs([], "p", "cpp") == []
+
+
+def test_strip_trailers_removes_boilerplate():
+    body = "Fix the offset overlap bug in the descriptor.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/x"
+    cleaned = bpd._strip_trailers(body)
+    assert "offset overlap bug" in cleaned
+    assert "Co-Authored-By" not in cleaned
+    assert "claude.ai/code" not in cleaned
+
+
+def test_commit_pairs_skips_trailer_only_body():
+    commits = [
+        {"hash": "a", "subject": "trailer only", "body": "Co-Authored-By: Someone <x@y.z>"},
+        {"hash": "b", "subject": "real", "body": "Generalize the descriptor to fix the ODR redefinition across gen.h files."},
+    ]
+    pairs = bpd.commit_pairs(commits, "proj")
+    assert len(pairs) == 1
+    assert "descriptor" in pairs[0]["messages"][1]["content"]
