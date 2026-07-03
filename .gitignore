@@ -6,3 +6,4 @@ __pycache__/
 memory.db*
 training_data.jsonl
 trilobite-lora/
+generated_tasks.jsonl
