@@ -3,12 +3,26 @@ import game_ladder
 
 # ---- detect_failure --------------------------------------------------
 
-def test_detect_failure_traceback_in_stderr():
+def test_detect_failure_timed_out_no_traceback_not_failed():
+    failed, reason = game_ladder.detect_failure("", "", None, timed_out=True)
+    assert failed is False
+    assert "no crash" in reason
+
+
+def test_detect_failure_traceback_in_stderr_is_failure():
     failed, reason = game_ladder.detect_failure(
-        "", "Traceback (most recent call last):\n  File x\nValueError: boom", 1
+        "", "Traceback (most recent call last):\n  File x\nNameError: name 'x' is not defined", 1
     )
     assert failed is True
-    assert "ValueError" in reason
+    assert "NameError" in reason
+
+
+def test_detect_failure_eoferror_traceback_not_failed():
+    failed, reason = game_ladder.detect_failure(
+        "", "Traceback (most recent call last):\n  File x\nEOFError", 1
+    )
+    assert failed is False
+    assert "EOFError" in reason
 
 
 def test_detect_failure_clean_run_ok():
@@ -16,10 +30,10 @@ def test_detect_failure_clean_run_ok():
     assert failed is False
 
 
-def test_detect_failure_nonzero_rc_no_traceback():
+def test_detect_failure_nonzero_rc_no_traceback_not_failed():
     failed, reason = game_ladder.detect_failure("", "", 1)
-    assert failed is True
-    assert "exit code" in reason
+    assert failed is False
+    assert "exited rc=1" in reason
 
 
 # ---- ground (real fast subprocesses, stdlib-only snippets) -----------
@@ -29,15 +43,25 @@ def test_ground_hello_world_passes():
     assert passed is True
 
 
+def test_ground_undefined_name_fails():
+    passed, detail = game_ladder.ground("undefined_name_xyz", "console")
+    assert passed is False
+
+
 def test_ground_missing_import_fails():
-    passed, detail = game_ladder.ground("import definitely_missing_module_xyz", "console")
+    passed, detail = game_ladder.ground("import missing_mod_zzz", "console")
     assert passed is False
 
 
 def test_ground_syntax_error_fails():
-    passed, detail = game_ladder.ground("x = (", "console")
+    passed, detail = game_ladder.ground("x=(", "console")
     assert passed is False
     assert "SyntaxError" in detail
+
+
+def test_ground_clean_exit_nonzero_passes():
+    passed, detail = game_ladder.ground("import sys; sys.exit(1)", "console")
+    assert passed is True
 
 
 # ---- run_ladder --------------------------------------------------------

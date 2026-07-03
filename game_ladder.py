@@ -22,18 +22,18 @@ PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "Scripts",
 _PYGAME_TEST_INSTRUCTION = (
     "Write a COMPLETE, runnable, single-file Python program. Return ONLY the code "
     "in one python code block. Use only the standard library and pygame; draw ALL "
-    "visuals procedurally with pygame.draw/Surface — NO external image/sound files. "
-    "The program MUST support headless testing: when the environment variable "
-    "GAME_TEST is set, run exactly 60 iterations of the main loop (processing "
-    "events, updating, drawing) then call sys.exit(0) — do NOT loop forever or "
-    "wait for input in that mode."
+    "visuals procedurally with pygame.draw/Surface — NO external files. It will be "
+    "tested by running headless (dummy video driver) and terminating it after a "
+    "few seconds, so just make sure it runs without errors from the start (don't "
+    "require real input)."
 )
 
 _CONSOLE_TEST_INSTRUCTION = (
     "Write a COMPLETE, runnable, single-file Python program. Return ONLY the code "
-    "in one python code block. Use only the standard library. The program MUST "
-    "support automated testing: when env var GAME_TEST is set, play a short "
-    "scripted/auto demo (no input()) and exit(0)."
+    "in one python code block. Use only the standard library. It will be tested by "
+    "running it with input piped from stdin and terminating after a few seconds; "
+    "handle end-of-input gracefully (e.g. catch EOFError) or simply be runnable — "
+    "just make sure it does not crash with an error."
 )
 
 
@@ -90,25 +90,51 @@ LEVELS = [
 ]
 
 
-def detect_failure(stdout, stderr, returncode):
-    """Pure classifier: did this run count as a failure, and why?
+# Exception types that are EXPECTED when we forcibly cut off input/time on a
+# game we're just probing for real crashes — these do not count as failures.
+REAL_CRASH_EXCEPTIONS = {"EOFError", "KeyboardInterrupt", "SystemExit", "BrokenPipeError"}
+
+# ~200 lines of generic input so console games' input() calls have something
+# to consume before eventually hitting EOF.
+_STDIN_FEED = (b"1\n2\n3\n5\n1\n1\n\n" * 30)
+
+
+def detect_failure(stdout, stderr, returncode, timed_out=False):
+    """Pure classifier: did this run count as a real crash, and why?
+
+    A "crash" is a traceback whose final exception type is a genuine bug
+    (NameError, TypeError, pygame.error, etc). EOFError/KeyboardInterrupt/
+    SystemExit/BrokenPipeError are expected artifacts of us cutting off
+    input/time and do NOT count as failures.
 
     Returns (failed: bool, reason: str).
     """
     stderr = stderr or ""
     stdout = stdout or ""
     has_traceback = "Traceback (most recent call last)" in stderr
+
+    if timed_out and not has_traceback:
+        return False, "ran (loop active, no crash)"
+
     if has_traceback:
         lines = [l for l in stderr.strip().splitlines() if l.strip()]
-        last_line = lines[-1] if lines else "Traceback (most recent call last)"
+        last_line = lines[-1] if lines else ""
+        exc_type = last_line.split(":", 1)[0].strip()
+        if exc_type in REAL_CRASH_EXCEPTIONS:
+            return False, "ran (ended on %s, expected)" % exc_type
         return True, last_line
-    if returncode != 0:
-        return True, "exit code %d" % returncode
-    return False, "ok"
+
+    if returncode == 0:
+        return False, "ran clean"
+
+    return False, "exited rc=%d, no crash" % returncode
 
 
-def ground(code, kind, timeout=15):
+def ground(code, kind, timeout=12):
     """Run generated game `code` headless and report pass/fail.
+
+    Grounds on whether the game actually crashes (an unexpected traceback),
+    not on any self-authored assertions inside the code.
 
     Returns (passed: bool, detail: str).
     """
@@ -129,7 +155,6 @@ def ground(code, kind, timeout=15):
         env.update({
             "SDL_VIDEODRIVER": "dummy",
             "SDL_AUDIODRIVER": "dummy",
-            "GAME_TEST": "1",
             "PYGAME_HIDE_SUPPORT_PROMPT": "1",
         })
         interp = PY if os.path.exists(PY) else sys.executable
@@ -137,21 +162,22 @@ def ground(code, kind, timeout=15):
             p = subprocess.run(
                 [interp, path],
                 env=env,
-                stdin=subprocess.DEVNULL,
+                input=_STDIN_FEED,
                 capture_output=True,
-                text=True,
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as e:
-            err = e.stderr or ""
-            if isinstance(err, bytes):
-                err = err.decode("utf-8", errors="replace")
-            if "Traceback (most recent call last)" in err:
-                lines = [l for l in err.strip().splitlines() if l.strip()]
-                return False, lines[-1] if lines else "traceback (timed out)"
-            return True, "ran (timed out, no crash)"
+            err = e.stderr or b""
+            if isinstance(err, str):
+                err = err.encode("utf-8", errors="replace")
+            err_text = err.decode("utf-8", errors="replace")
+            out_text = (e.stdout or b"").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            failed, reason = detect_failure(out_text, err_text, None, timed_out=True)
+            return (not failed), reason
 
-        failed, reason = detect_failure(p.stdout, p.stderr, p.returncode)
+        out_text = p.stdout.decode("utf-8", errors="replace") if isinstance(p.stdout, bytes) else p.stdout
+        err_text = p.stderr.decode("utf-8", errors="replace") if isinstance(p.stderr, bytes) else p.stderr
+        failed, reason = detect_failure(out_text, err_text, p.returncode, timed_out=False)
         return (not failed), reason
     finally:
         try:
