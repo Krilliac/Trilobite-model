@@ -29,6 +29,7 @@ import orchestrator
 import reward
 import reflection
 import embeddings
+import personas
 
 from mcp.server.fastmcp import FastMCP
 
@@ -227,6 +228,7 @@ def trilobite(
     num_ctx: int = 4096,
     trace: bool = False,
     strict: bool = None,
+    persona: str = "",
 ) -> str:
     """Ask 'trilobite', the local self-improving coding model, for help.
 
@@ -249,6 +251,11 @@ def trilobite(
     'trilobite' alias only, and returns an error if that alias isn't installed,
     instead of silently falling back to the base coder model. Default (strict=False
     / unset) keeps today's fallback behavior.
+
+    persona selects one of personas.names() (e.g. "explainer", "reviewer",
+    "teacher") to steer tone/behavior for non-coders — its system prompt is
+    prepended ahead of `system`/trace instructions. Default "" (empty) leaves
+    behavior unchanged (plain coder tone, today's default).
     """
     strict_eff = _STRICT_DEFAULT if strict is None else strict
     model = resolve_trilobite_model(strict_eff)
@@ -259,6 +266,11 @@ def trilobite(
     effective_system = system
     if trace:
         effective_system = "%s\n\n%s" % (system, TRACE_SYSTEM) if system else TRACE_SYSTEM
+    if persona and persona.strip():
+        persona_prompt = personas.get(persona)
+        effective_system = (
+            "%s\n\n%s" % (persona_prompt, effective_system) if effective_system else persona_prompt
+        )
 
     gen = _make_generate(model, effective_system, temperature, num_predict, num_ctx)
     conn = _open_db()

@@ -12,6 +12,7 @@ import grounding
 import training_tasks
 import intents
 import feedback
+import personas
 
 BANNER = """trilobite - fully local self-improving coder
 type /help for commands, or just start typing to ask trilobite something.
@@ -21,6 +22,7 @@ HELP = """commands:
   /help              show this help
   /trace [on|off]    toggle trace mode (bare = on); shows retrieval + prompt
   /strict [on|off]   toggle strict mode (bare = on); pins to the trilobite alias
+  /persona [name]    show/set active persona (coder/explainer/reviewer/teacher)
   /stats             show trilobite's learning stats
   /lessons           show the 10 most recent distilled lessons
   /pass, /good       record the last answer as tests_passed
@@ -108,6 +110,7 @@ def _run_train(n):
 def main():
     trace = False
     strict = None  # None = env default
+    persona = personas.DEFAULT
     last_iid = None
     last_response = None
 
@@ -120,6 +123,15 @@ def main():
         nonlocal strict
         strict = val
         print("strict: %s" % ("on" if strict else "off"))
+
+    def do_persona(arg):
+        nonlocal persona
+        arg = (arg or "").strip()
+        if not arg:
+            print("persona: %s (available: %s)" % (persona, ", ".join(personas.names())))
+            return
+        persona = arg.lower()
+        print("persona: %s" % persona)
 
     def do_run():
         code = grounding.extract_code_block(last_response)
@@ -155,6 +167,8 @@ def main():
                 apply_trace(_on_off(arg, trace))
             elif cmd == "/strict":
                 apply_strict(_on_off(arg, strict))
+            elif cmd == "/persona":
+                do_persona(arg)
             elif cmd == "/stats":
                 print(server.trilobite_stats())
             elif cmd == "/lessons":
@@ -216,7 +230,7 @@ def main():
                 _run_train(intent["train"])
             continue
 
-        out = server.trilobite(line, trace=trace, strict=strict)
+        out = server.trilobite(line, trace=trace, strict=strict, persona=persona)
         if out.startswith("ERROR"):
             print(out)
             continue
