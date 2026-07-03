@@ -11,3 +11,5 @@ games/
 trilobite-lora/
 combined_training.jsonl
 venv-train/
+trilobite-merged/
+Modelfile.trilobite
