@@ -26,6 +26,10 @@ import intents
 
 DEFAULT_PORT = 11435
 
+# Auth + bind config. Empty API_KEY = auth disabled (local-only default).
+API_KEY = os.environ.get("TRILOBITE_API_KEY", "")
+HOST = os.environ.get("TRILOBITE_HOST", "127.0.0.1")
+
 # Server state (module globals, single-user local — mirrors trilobite_repl.py).
 TRACE = False
 STRICT = None  # None = env default (server._STRICT_DEFAULT)
@@ -48,6 +52,19 @@ HELP_TEXT = """commands:
 Plain English also works for the toggles/actions above, e.g. "strict on,
 show your reasoning", "run it", "train yourself".
 """
+
+
+def check_auth(auth_header, api_key):
+    """Pure auth check. True if api_key is empty (auth disabled), else True only if
+    auth_header is "Bearer <api_key>" (or a raw match to api_key, for convenience)."""
+    if not api_key:
+        return True
+    auth_header = auth_header or ""
+    if auth_header == "Bearer " + api_key:
+        return True
+    if auth_header == api_key:
+        return True
+    return False
 
 
 def _strip_footer(text):
@@ -245,8 +262,22 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+    def _send_auth_error(self):
+        body = json.dumps({
+            "error": {"message": "invalid api key", "type": "auth"},
+        }).encode("utf-8")
+        self.send_response(401)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         if self.path.rstrip("/") == "/v1/models":
+            if not check_auth(self.headers.get("Authorization", ""), API_KEY):
+                self._send_auth_error()
+                return
             body = json.dumps({
                 "object": "list",
                 "data": [{"id": "trilobite", "object": "model", "owned_by": "local"}],
@@ -267,6 +298,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404)
             self._cors()
             self.end_headers()
+            return
+
+        if not check_auth(self.headers.get("Authorization", ""), API_KEY):
+            self._send_auth_error()
             return
 
         try:
@@ -339,9 +374,10 @@ def main():
     else:
         port = int(os.environ.get("TRILOBITE_PORT", DEFAULT_PORT))
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    url = "http://127.0.0.1:%d" % port
+    httpd = ThreadingHTTPServer((HOST, port), Handler)
+    url = "http://%s:%d" % (HOST, port)
     print("trilobite_serve listening on %s" % url)
+    print("auth: %s" % ("ON (api key required)" if API_KEY else "OFF (open, local use only)"))
     print("point your chat UI's OpenAI API base at %s/v1 (any api key)" % url)
     try:
         httpd.serve_forever()
