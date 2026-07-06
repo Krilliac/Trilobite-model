@@ -41,13 +41,31 @@ your task ─► retrieve relevant lessons ─► augment prompt ─► local mo
 
 All of it is local and private by construction (cloud tiers never participate in the learning path).
 
+### Memory beyond lessons
+
+The learning loop above is *cross-task* memory. On top of it trilobite also has:
+
+- **Conversation memory (ON by default).** Successive `trilobite` calls remember each
+  other, so follow-ups have context. With no `session`, calls share the `default`
+  thread; pass a distinct `session` id to isolate a conversation, or `session="none"`
+  for a one-off single turn. Threads persist in `memory.db` across restarts and are
+  auto-titled; older turns are rolled into a running summary so a thread never
+  overflows the local context window. (The 7B is a ~32K-context model on a 6 GB GPU —
+  memory is *carrying the right turns + summarizing the rest*, not a giant window.)
+  List/resume threads with `trilobite_sessions()` / REPL `/sessions` / `/resume`.
+- **Semantic recall.** Each call also surfaces the most similar *past good-outcome
+  solutions* (vector search over prior interactions), not just distilled lessons.
+- **Project facts.** `trilobite_remember_fact(text, project=…)` stores durable facts
+  (toolchain, conventions, key paths) that are injected into every call for that
+  project — a mini-brief the model carries itself. Scope a call with `project=…`.
+
 ---
 
 ## Three ways to run it
 
-1. **Local, in your terminal** — `trilobite` (like launching `claude`). Interactive REPL routed through the full loop, with `/trace`, `/strict`, `/run`, `/train`, `/pass`, `/fail`, `/stats` commands (and plain-English equivalents).
-2. **Hosted on your own server + a thin client anywhere** — run `deploy_trilobite.sh --serve` on your box (systemd service, API key), then any machine runs the single-file `trilobite_client.py` pointed at it.
-3. **Integrated with Claude** — the MCP `local-llm` tools let Claude offload to it (`offload(learn=True)`, `trilobite`, `record_outcome`, `trilobite_stats`).
+1. **Local, in your terminal** — `trilobite` (like launching `claude`). Interactive REPL routed through the full loop, with `/trace`, `/strict`, `/run`, `/train`, `/pass`, `/fail`, `/stats` commands plus conversation commands `/new`, `/sessions`, `/resume`, `/project`, `/fact`, `/facts` (and plain-English equivalents). Each REPL launch is its own remembered thread.
+2. **Hosted on your own server + a thin client anywhere** — run `deploy_trilobite.sh --serve` on your box (systemd service, API key), then any machine runs the single-file `trilobite_client.py` pointed at it. The serve layer threads the chat UI's own conversation history.
+3. **Integrated with Claude** — the MCP `local-llm` tools let Claude offload to it (`offload(learn=True)`, `trilobite`, `record_outcome`, `trilobite_stats`, `trilobite_sessions`, `trilobite_remember_fact`).
 
 ---
 
@@ -121,7 +139,9 @@ Flat, mostly-stdlib Python modules (plus `mcp`):
 | `retriever.py` | hybrid lexical+semantic retrieval with relevance threshold |
 | `reward.py` / `reflection.py` | outcome → score; distill deduped lessons |
 | `orchestrator.py` | the retrieve → augment → generate → capture flow |
-| `server.py` | MCP server: `offload` / `trilobite` / `record_outcome` / `trilobite_stats` |
+| `server.py` | MCP server: `offload` / `trilobite` / `record_outcome` / `trilobite_stats` / `trilobite_sessions` / `trilobite_remember_fact` |
+| `recall.py` | semantic recall of past good-outcome solutions (vector search over interactions) |
+| `summarizer.py` | rolling conversation summaries + session auto-titles (fast tier) |
 | `trilobite_repl.py` / `trilobite_client.py` | local REPL / thin remote client |
 | `trilobite_serve.py` | OpenAI-compatible proxy (for chat UIs) |
 | `intents.py`, `grounding.py`, `training_tasks.py`, `self_curriculum.py`, `eval_retrieval.py`, `game_ladder.py` | NL control, sandboxed execution, practice tasks, self-generated curriculum, retrieval eval, capability gauntlet |

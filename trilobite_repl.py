@@ -29,6 +29,12 @@ HELP = """commands:
   /fail, /bad        record the last answer as failed
   /run               actually execute the code block from the last response
   /train [N]         grounded self-learning: practice N tasks (default 3, max 10)
+  /new               start a fresh conversation thread (forget this chat's history)
+  /sessions          list past conversation threads
+  /resume <id|title> continue a past thread by id or title prefix
+  /project [name]    show/set the active project (scopes facts)
+  /fact <text>       remember a durable fact for the active project
+  /facts             list facts for the active project
   /exit, /quit, /q   leave
 """
 
@@ -88,7 +94,8 @@ def _run_train(n):
     lessons = 0
     for t in tasks:
         print("  training: %s ..." % t["name"])
-        resp = server.trilobite(t["prompt"])
+        # Training runs are single-turn and must not pollute the user's chat thread.
+        resp = server.trilobite(t["prompt"], session="none")
         iid = server.parse_interaction_id(resp)
         code = grounding.extract_code_block(resp)
         ok = False
@@ -107,12 +114,42 @@ def _run_train(n):
         len(tasks), passed, len(tasks) - passed, lessons))
 
 
+def _print_sessions():
+    conn = server._open_db()
+    try:
+        sessions = memory_store.list_sessions(conn, 20)
+    finally:
+        conn.close()
+    if not sessions:
+        print("(no past sessions)")
+        return
+    for s in sessions:
+        print("  %s  [%d turns]  %s" % (
+            s["session_id"], s["turn_count"], s.get("title") or "(untitled)"))
+
+
+def _print_facts(project):
+    conn = server._open_db()
+    try:
+        facts = memory_store.facts_for_project(conn, project)
+    finally:
+        conn.close()
+    if not facts:
+        print("(no facts for project '%s')" % project)
+        return
+    for f in facts:
+        print("  - %s" % f["text"])
+
+
 def main():
     trace = False
     strict = None  # None = env default
     persona = personas.DEFAULT
     last_iid = None
     last_response = None
+    # A fresh conversation thread per REPL launch; /new rerolls it, /resume switches it.
+    session_id = memory_store.new_id()
+    project = server.DEFAULT_PROJECT
 
     def apply_trace(val):
         nonlocal trace
@@ -191,6 +228,45 @@ def main():
                 n = _parse_train_n(arg)
                 if n is not None:
                     _run_train(n)
+            elif cmd == "/new":
+                session_id = memory_store.new_id()
+                last_iid = None
+                last_response = None
+                print("started a new thread (%s)" % session_id)
+            elif cmd == "/sessions":
+                _print_sessions()
+            elif cmd == "/resume":
+                target = (arg or "").strip()
+                if not target:
+                    print("usage: /resume <session-id|title-prefix>")
+                else:
+                    conn = server._open_db()
+                    try:
+                        found = memory_store.find_session(conn, target)
+                    finally:
+                        conn.close()
+                    if found:
+                        session_id = found
+                        last_iid = None
+                        last_response = None
+                        print("resumed thread %s" % session_id)
+                    else:
+                        print("no session matching '%s'" % target)
+            elif cmd == "/project":
+                a = (arg or "").strip()
+                if not a:
+                    print("project: %s" % project)
+                else:
+                    project = a
+                    print("project: %s" % project)
+            elif cmd == "/fact":
+                a = (arg or "").strip()
+                if not a:
+                    print("usage: /fact <text>")
+                else:
+                    print(server.trilobite_remember_fact(a, project=project))
+            elif cmd == "/facts":
+                _print_facts(project)
             elif cmd in ("/exit", "/quit", "/q"):
                 break
             else:
@@ -230,7 +306,8 @@ def main():
                 _run_train(intent["train"])
             continue
 
-        out = server.trilobite(line, trace=trace, strict=strict, persona=persona)
+        out = server.trilobite(line, trace=trace, strict=strict, persona=persona,
+                               session=session_id, project=project)
         if out.startswith("ERROR"):
             print(out)
             continue

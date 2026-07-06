@@ -1,33 +1,64 @@
-"""Pure learning flow: retrieve -> augment -> generate -> capture."""
+"""Pure learning flow: retrieve -> augment -> generate -> capture.
+
+The current turn is augmented with facts (durable), lessons (distilled tips), and
+recalls (similar past solutions), then answered. `history` (prior conversation turns)
+is passed to the model as real chat messages, not folded into the prompt text.
+"""
 import memory_store
 import retriever
 
 MEMORY_HEADER = "# Relevant lessons from past work (may help):"
+RECALL_HEADER = "# Similar things solved before (for reference):"
+FACTS_HEADER = "# Project facts (always true here):"
 
 
-def build_prompt(task, lessons):
-    if not lessons:
+def build_prompt(task, lessons, recalls=None, facts=None):
+    blocks = []
+    if facts:
+        blocks.append("%s\n%s" % (FACTS_HEADER, "\n".join("- %s" % f for f in facts)))
+    if lessons:
+        blocks.append("%s\n%s" % (MEMORY_HEADER, "\n".join("- %s" % l for l in lessons)))
+    if recalls:
+        blocks.append("%s\n%s" % (RECALL_HEADER, "\n".join("- %s" % r for r in recalls)))
+    if not blocks:
         return task
-    block = "\n".join("- %s" % l for l in lessons)
-    return "%s\n%s\n\n# Task:\n%s" % (MEMORY_HEADER, block, task)
+    return "%s\n\n# Task:\n%s" % ("\n\n".join(blocks), task)
 
 
-def _run(conn, task, tier, generate_fn, retrieve_fn=retriever.retrieve, id_fn=memory_store.new_id):
+def _run(conn, task, tier, generate_fn, retrieve_fn=retriever.retrieve,
+         id_fn=memory_store.new_id, history=None, recalls=None, facts=None,
+         session_id=None, task_embedding=None):
     lessons = retrieve_fn(conn, task)
-    augmented = build_prompt(task, lessons)
-    response = generate_fn(augmented)
+    augmented = build_prompt(task, lessons, recalls, facts)
+    # Existing callers/tests pass a 1-arg gen; only pass history when present.
+    response = generate_fn(augmented, history) if history else generate_fn(augmented)
     interaction_id = id_fn()
-    memory_store.log_interaction(conn, interaction_id, task, "\n".join(lessons), response, tier)
+    memory_store.log_interaction(
+        conn, interaction_id, task, "\n".join(lessons), response, tier,
+        session_id=session_id, task_embedding=task_embedding,
+    )
     return response, interaction_id, lessons, augmented
 
 
 def run_with_learning(conn, task, tier, generate_fn,
-                      retrieve_fn=retriever.retrieve, id_fn=memory_store.new_id):
-    response, interaction_id, _lessons, _augmented = _run(conn, task, tier, generate_fn, retrieve_fn, id_fn)
+                      retrieve_fn=retriever.retrieve, id_fn=memory_store.new_id,
+                      history=None, recalls=None, facts=None,
+                      session_id=None, task_embedding=None):
+    response, interaction_id, _lessons, _augmented = _run(
+        conn, task, tier, generate_fn, retrieve_fn, id_fn,
+        history=history, recalls=recalls, facts=facts,
+        session_id=session_id, task_embedding=task_embedding,
+    )
     return response, interaction_id
 
 
 def run_with_learning_traced(conn, task, tier, generate_fn,
-                             retrieve_fn=retriever.retrieve, id_fn=memory_store.new_id):
-    response, interaction_id, lessons, augmented = _run(conn, task, tier, generate_fn, retrieve_fn, id_fn)
+                             retrieve_fn=retriever.retrieve, id_fn=memory_store.new_id,
+                             history=None, recalls=None, facts=None,
+                             session_id=None, task_embedding=None):
+    response, interaction_id, lessons, augmented = _run(
+        conn, task, tier, generate_fn, retrieve_fn, id_fn,
+        history=history, recalls=recalls, facts=facts,
+        session_id=session_id, task_embedding=task_embedding,
+    )
     return response, interaction_id, {"lessons": lessons, "augmented_prompt": augmented}

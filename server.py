@@ -30,6 +30,8 @@ import reward
 import reflection
 import embeddings
 import personas
+import recall
+import summarizer
 
 from mcp.server.fastmcp import FastMCP
 
@@ -53,6 +55,16 @@ CLOUD_TIERS = {"cloud-code", "cloud-general"}
 # of silently falling back to the base coder model. Env default lets ops flip this
 # machine-wide without touching call sites.
 _STRICT_DEFAULT = os.environ.get("TRILOBITE_STRICT", "").strip().lower() in ("1", "true", "yes", "on")
+
+# Conversation memory is ON by default: a call with no explicit session threads the
+# shared DEFAULT_SESSION so follow-ups are remembered. Pass session="none" to opt out
+# (single-turn), or a distinct id to isolate a thread. Same idea for project facts.
+DEFAULT_SESSION = os.environ.get("TRILOBITE_DEFAULT_SESSION", "default")
+DEFAULT_PROJECT = os.environ.get("TRILOBITE_DEFAULT_PROJECT", "default")
+# Sessioned calls get a roomier context (fits easily on the 6 GB 4050) and keep the
+# last MAX_TURNS turns live; older turns are rolled into a summary.
+SESSION_NUM_CTX = int(os.environ.get("LOCAL_LLM_SESSION_NUM_CTX", "8192"))
+MAX_TURNS = int(os.environ.get("TRILOBITE_MAX_TURNS", "12"))
 
 _DB_PATH = os.path.join(os.path.dirname(__file__), "memory.db")
 
@@ -115,10 +127,12 @@ def resolve_trilobite_model(strict=False):
 
 
 def _make_generate(model, system, temperature, num_predict, num_ctx):
-    def gen(prompt):
+    def gen(prompt, history=None):
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
+        if history:
+            messages.extend(history)
         messages.append({"role": "user", "content": prompt})
         options = {"temperature": temperature, "num_predict": num_predict,
                    "num_ctx": num_ctx}
@@ -133,6 +147,126 @@ def _generate_text(prompt, tier="fast", system="", temperature=0.2,
                    num_predict=256, num_ctx=2048):
     model = TIERS.get(tier, TIERS["fast"])
     return _make_generate(model, system, temperature, num_predict, num_ctx)(prompt)
+
+
+def _resolve_session(session):
+    """"" -> DEFAULT_SESSION (memory on by default); "none" -> None (single turn)."""
+    s = (session or "").strip()
+    if s == "":
+        return DEFAULT_SESSION
+    if s.lower() == "none":
+        return None
+    return s
+
+
+def _resolve_project(project):
+    """Same convention as sessions: "" -> DEFAULT_PROJECT, "none" -> None."""
+    p = (project or "").strip()
+    if p == "":
+        return DEFAULT_PROJECT
+    if p.lower() == "none":
+        return None
+    return p
+
+
+def _resolve_model_and_system(system, trace, strict, persona):
+    """Shared prep for the trilobite tool and the serve layer.
+
+    Returns (model, effective_system); model is None if the strict alias is missing.
+    """
+    strict_eff = _STRICT_DEFAULT if strict is None else strict
+    model = resolve_trilobite_model(strict_eff)
+    if model is None:
+        return None, None
+    effective_system = system
+    if trace:
+        effective_system = "%s\n\n%s" % (system, TRACE_SYSTEM) if system else TRACE_SYSTEM
+    if persona and persona.strip():
+        persona_prompt = personas.get(persona)
+        effective_system = (
+            "%s\n\n%s" % (persona_prompt, effective_system) if effective_system else persona_prompt
+        )
+    return model, effective_system
+
+
+def _session_history_messages(conn, session_id, max_turns):
+    """Build the prior-turn chat messages for a session, summarizing overflow.
+
+    Turns older than the last `max_turns` are folded (once) into sessions.summary via
+    the fast tier; the summary is prepended as a system message so nothing is lost.
+    Summarization is best-effort: if it fails, we simply send the live turns.
+    """
+    turns = memory_store.session_turns(conn, session_id)
+    sess = memory_store.get_session(conn, session_id) or {}
+    summary = sess.get("summary")
+    summarized_through = sess.get("summarized_through")
+
+    if max_turns and len(turns) > max_turns:
+        live = turns[-max_turns:]
+        window_start = len(turns) - len(live)
+        marker_idx = -1
+        if summarized_through:
+            for i, t in enumerate(turns):
+                if t["id"] == summarized_through:
+                    marker_idx = i
+                    break
+        new_overflow = turns[marker_idx + 1:window_start]
+        if new_overflow:
+            pairs = [(t["task"], t["response"]) for t in new_overflow]
+            try:
+                summary = summarizer.summarize(summary, pairs, _generate_text)
+                memory_store.update_session_summary(
+                    conn, session_id, summary, new_overflow[-1]["id"]
+                )
+            except urllib.error.URLError:
+                pass  # keep prior summary; live turns still carry recent context
+    else:
+        live = turns
+
+    msgs = []
+    if summary:
+        msgs.append({"role": "system",
+                     "content": "Earlier in this conversation:\n%s" % summary})
+    for t in live:
+        msgs.append({"role": "user", "content": t["task"]})
+        msgs.append({"role": "assistant", "content": t["response"]})
+    return msgs
+
+
+def _maybe_title(conn, session_id, first_prompt):
+    """Give a brand-new session a short title (best-effort, never fatal)."""
+    sess = memory_store.get_session(conn, session_id) or {}
+    if sess.get("title"):
+        return
+    try:
+        title = summarizer.make_title(first_prompt, _generate_text)
+    except urllib.error.URLError:
+        title = (first_prompt or "").strip()[:40]
+    memory_store.set_session_title(conn, session_id, title)
+
+
+def _answer(conn, prompt, model, effective_system, temperature, num_predict,
+            num_ctx, session_id, project, history, trace=False):
+    """Core answer path shared by the tool and serve: augment (facts/lessons/recall),
+    generate with `history`, capture. Returns (response, interaction_id, trace_ctx)."""
+    gen = _make_generate(model, effective_system, temperature, num_predict, num_ctx)
+    qv = embeddings.embed(prompt)
+    blob = embeddings.to_blob(qv) if qv else None
+    recalls = recall.recall(conn, prompt, qv=qv, exclude_session=session_id)
+    facts = None
+    if project:
+        facts = [f["text"] for f in memory_store.facts_for_project(conn, project)]
+    if trace:
+        resp, iid, tctx = orchestrator.run_with_learning_traced(
+            conn, prompt, "trilobite", gen, history=history, recalls=recalls,
+            facts=facts, session_id=session_id, task_embedding=blob,
+        )
+        return resp, iid, tctx
+    resp, iid = orchestrator.run_with_learning(
+        conn, prompt, "trilobite", gen, history=history, recalls=recalls,
+        facts=facts, session_id=session_id, task_embedding=blob,
+    )
+    return resp, iid, None
 
 
 mcp = FastMCP("local-llm")
@@ -229,58 +363,66 @@ def trilobite(
     trace: bool = False,
     strict: bool = None,
     persona: str = "",
+    session: str = "",
+    project: str = "",
 ) -> str:
     """Ask 'trilobite', the local self-improving coding model, for help.
 
     This is the interactive front door to the same learning loop the fleet uses:
-    the prompt is augmented with lessons distilled from past work, answered locally
-    on the 4050, captured, and returned with a '[interaction_id: <id>]' footer.
-    After you learn how it went, call record_outcome(<id>, "tests_passed" | "accepted"
-    | "compiled" | "rejected" | "failed") so trilobite gets better over time.
-    trilobite is local-only and always uses the local coder model/alias — it never
-    routes to another tier or the cloud; use offload for that.
-    Defaults to the 7B coder base model, or the 'trilobite' Ollama alias if it exists.
+    the prompt is augmented with project facts, lessons distilled from past work, and
+    similar past solutions, answered locally on the 4050, captured, and returned with
+    a '[interaction_id: <id>]' footer. After you learn how it went, call
+    record_outcome(<id>, "tests_passed" | "accepted" | "compiled" | "rejected" |
+    "failed") so trilobite gets better over time. trilobite is local-only and always
+    uses the local coder model/alias — it never routes to another tier or the cloud;
+    use offload for that. Defaults to the 7B coder base model, or the 'trilobite'
+    Ollama alias if it exists.
+
+    CONVERSATION MEMORY IS ON BY DEFAULT. Successive calls remember each other: with
+    no `session`, the shared "default" thread is used, so follow-ups have context.
+    Pass a distinct `session` id to keep an isolated thread (recommended: one id per
+    conversation), or session="none" for a one-off single-turn answer. Threads persist
+    in memory.db across restarts; older turns are auto-summarized to stay in the local
+    context window (the most recent turns are kept verbatim). Use trilobite_sessions()
+    to list threads.
+
+    `project` scopes durable facts (see trilobite_remember_fact); those facts are
+    always injected. No project -> the "default" project; project="none" -> no facts.
 
     trace=True instructs the model to externalize its step-by-step reasoning
-    ('## Reasoning' then '## Answer'), and appends a TRACE block showing the
-    SYSTEM's actual decision context: which lessons were retrieved, the exact
-    augmented prompt sent to the model, the model/tier used, and the generation
-    params. Default (trace=False) behavior is unchanged.
+    ('## Reasoning' then '## Answer'), and appends a TRACE block showing the SYSTEM's
+    actual decision context (retrieved lessons, exact augmented prompt, model/params).
 
     strict=True (or env TRILOBITE_STRICT=1) pins this call to the fine-tuned
-    'trilobite' alias only, and returns an error if that alias isn't installed,
-    instead of silently falling back to the base coder model. Default (strict=False
-    / unset) keeps today's fallback behavior.
+    'trilobite' alias only, erroring if it isn't installed instead of falling back.
 
-    persona selects one of personas.names() (e.g. "explainer", "reviewer",
-    "teacher") to steer tone/behavior for non-coders — its system prompt is
-    prepended ahead of `system`/trace instructions. Default "" (empty) leaves
-    behavior unchanged (plain coder tone, today's default).
+    persona selects one of personas.names() (e.g. "explainer", "reviewer", "teacher")
+    to steer tone; its system prompt is prepended ahead of `system`/trace instructions.
     """
-    strict_eff = _STRICT_DEFAULT if strict is None else strict
-    model = resolve_trilobite_model(strict_eff)
+    model, effective_system = _resolve_model_and_system(system, trace, strict, persona)
     if model is None:
         return ("ERROR: trilobite model/alias not found. Run setup_alias.py, or call "
                 "with strict=False to fall back to the base coder.")
 
-    effective_system = system
-    if trace:
-        effective_system = "%s\n\n%s" % (system, TRACE_SYSTEM) if system else TRACE_SYSTEM
-    if persona and persona.strip():
-        persona_prompt = personas.get(persona)
-        effective_system = (
-            "%s\n\n%s" % (persona_prompt, effective_system) if effective_system else persona_prompt
-        )
+    session_id = _resolve_session(session)
+    project_id = _resolve_project(project)
+    # Sessioned threads get the roomier context window; honor a larger explicit num_ctx.
+    num_ctx_eff = max(num_ctx, SESSION_NUM_CTX) if session_id else num_ctx
 
-    gen = _make_generate(model, effective_system, temperature, num_predict, num_ctx)
     conn = _open_db()
     try:
-        if trace:
-            response, iid, trace_ctx = orchestrator.run_with_learning_traced(
-                conn, prompt, "trilobite", gen
-            )
-        else:
-            response, iid = orchestrator.run_with_learning(conn, prompt, "trilobite", gen)
+        history = None
+        is_first = False
+        if session_id:
+            is_first = memory_store.session_turn_count(conn, session_id) == 0
+            memory_store.touch_session(conn, session_id, project_id)
+            history = _session_history_messages(conn, session_id, MAX_TURNS)
+        response, iid, trace_ctx = _answer(
+            conn, prompt, model, effective_system, temperature, num_predict,
+            num_ctx_eff, session_id, project_id, history, trace=trace,
+        )
+        if session_id and is_first:
+            _maybe_title(conn, session_id, prompt)
     except urllib.error.URLError as e:
         return ("ERROR contacting Ollama at %s: %s. Is the Ollama server "
                 "running? (the tray app / `ollama serve`)" % (BASE, e))
@@ -288,9 +430,37 @@ def trilobite(
         conn.close()
 
     if trace:
-        params = {"temperature": temperature, "num_predict": num_predict, "num_ctx": num_ctx}
+        params = {"temperature": temperature, "num_predict": num_predict, "num_ctx": num_ctx_eff}
         trace_block = _format_trace(model, "trilobite", params, trace_ctx)
         # Footer must stay LAST so parse_interaction_id's $-anchored regex still finds it.
+        return with_footer(response + trace_block, iid)
+    return with_footer(response, iid)
+
+
+def answer_with_history(prompt, history, trace=False, strict=None):
+    """Answer a turn using caller-supplied prior `history` (list of {role, content}).
+
+    For the OpenAI-compatible serve layer, where the chat UI owns the conversation:
+    history comes from the request, not the DB, so no DB session is threaded. Facts
+    still come from the DEFAULT_PROJECT. Returns the reply text (with footer)."""
+    model, effective_system = _resolve_model_and_system("", trace, strict, "")
+    if model is None:
+        return ("ERROR: trilobite model/alias not found. Run setup_alias.py, or call "
+                "with strict=False to fall back to the base coder.")
+    conn = _open_db()
+    try:
+        response, iid, trace_ctx = _answer(
+            conn, prompt, model, effective_system, 0.2, 1024, SESSION_NUM_CTX,
+            None, DEFAULT_PROJECT, history or None, trace=trace,
+        )
+    except urllib.error.URLError as e:
+        return ("ERROR contacting Ollama at %s: %s. Is the Ollama server "
+                "running? (the tray app / `ollama serve`)" % (BASE, e))
+    finally:
+        conn.close()
+    if trace:
+        params = {"temperature": 0.2, "num_predict": 1024, "num_ctx": SESSION_NUM_CTX}
+        trace_block = _format_trace(model, "trilobite", params, trace_ctx)
         return with_footer(response + trace_block, iid)
     return with_footer(response, iid)
 
@@ -366,6 +536,55 @@ def trilobite_stats() -> str:
     else:
         lines.append("  recent lessons: (none yet)")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def trilobite_sessions(limit: int = 20) -> str:
+    """List trilobite conversation threads, most recently used first.
+
+    Each line shows the session id (pass it as `session` to trilobite to resume),
+    its auto-generated title, live turn count, and last-updated time. Read-only.
+    """
+    conn = _open_db()
+    try:
+        sessions = memory_store.list_sessions(conn, limit=limit)
+    finally:
+        conn.close()
+    if not sessions:
+        return "no conversation sessions yet."
+    lines = ["trilobite sessions (most recent first):"]
+    for s in sessions:
+        lines.append("  %s  [%d turns]  %s  (updated %s)" % (
+            s["session_id"], s["turn_count"], s.get("title") or "(untitled)",
+            s.get("updated_ts") or "?",
+        ))
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def trilobite_remember_fact(text: str, project: str = "") -> str:
+    """Store a durable fact trilobite should ALWAYS know for a project.
+
+    Unlike lessons (earned from good outcomes), facts are asserted directly and are
+    injected into every trilobite call for that project — a mini project brief the
+    model carries itself (toolchain, conventions, key paths, gotchas). No `project`
+    stores it under the "default" project. Use trilobite(..., project="<name>") to
+    scope which facts apply to a call.
+    """
+    text = (text or "").strip()
+    if not text:
+        return "ERROR: empty fact."
+    project_id = _resolve_project(project) or DEFAULT_PROJECT
+    conn = _open_db()
+    try:
+        emb = embeddings.embed(text)
+        blob = embeddings.to_blob(emb) if emb else None
+        fact_id = memory_store.new_id()
+        memory_store.add_fact(conn, fact_id, project_id, text, blob)
+        n = memory_store.count_facts(conn, project_id)
+    finally:
+        conn.close()
+    return "Remembered fact for project '%s' (%d total). id=%s" % (project_id, n, fact_id)
 
 
 @mcp.tool()

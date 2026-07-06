@@ -26,6 +26,22 @@ CREATE TABLE IF NOT EXISTS lessons (
     ts TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS lessons_fts USING fts5(lesson_id UNINDEXED, text);
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    title TEXT,
+    summary TEXT,
+    summarized_through TEXT,
+    project TEXT,
+    created_ts TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_ts TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS facts (
+    id TEXT PRIMARY KEY,
+    project TEXT,
+    text TEXT,
+    embedding BLOB,
+    ts TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -38,8 +54,33 @@ def connect(path=":memory:", check_same_thread=True):
     return conn
 
 
+def _column_names(conn, table):
+    return {r[1] for r in conn.execute("PRAGMA table_info(%s)" % table).fetchall()}
+
+
+def _migrate(conn):
+    """Idempotently add columns to pre-existing DBs (fresh DBs get them here too).
+
+    New nullable columns default to NULL on old rows, which every session/recall
+    query treats as 'not part of a session / no embedding' — so today's single-turn,
+    session-less behavior is preserved for existing data.
+    """
+    cols = _column_names(conn, "interactions")
+    if "session_id" not in cols:
+        conn.execute("ALTER TABLE interactions ADD COLUMN session_id TEXT")
+    if "task_embedding" not in cols:
+        conn.execute("ALTER TABLE interactions ADD COLUMN task_embedding BLOB")
+
+
 def init_db(conn):
     conn.executescript(_SCHEMA)
+    _migrate(conn)
+    # Indexes reference migrated columns, so they must come after _migrate.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_interactions_session "
+        "ON interactions(session_id, ts)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_project ON facts(project)")
     conn.commit()
 
 
@@ -47,11 +88,13 @@ def new_id():
     return os.urandom(8).hex()
 
 
-def log_interaction(conn, interaction_id, task, retrieved_ctx, response, tier):
+def log_interaction(conn, interaction_id, task, retrieved_ctx, response, tier,
+                    session_id=None, task_embedding=None):
     conn.execute(
-        "INSERT INTO interactions(id, task, retrieved_ctx, response, tier) "
-        "VALUES(?, ?, ?, ?, ?)",
-        (interaction_id, task, retrieved_ctx, response, tier),
+        "INSERT INTO interactions"
+        "(id, task, retrieved_ctx, response, tier, session_id, task_embedding) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?)",
+        (interaction_id, task, retrieved_ctx, response, tier, session_id, task_embedding),
     )
     conn.commit()
 
@@ -146,3 +189,149 @@ def interactions_with_good_outcome(conn, good_signals):
         tuple(good_signals),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- conversation sessions -------------------------------------------------
+
+def session_turns(conn, session_id):
+    """All turns for a session, oldest-first, as {id, task, response} dicts.
+
+    ts has only second resolution, so rowid is the tiebreaker for same-second turns.
+    """
+    rows = conn.execute(
+        "SELECT id, task, response FROM interactions WHERE session_id=? "
+        "ORDER BY ts ASC, rowid ASC",
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def session_history(conn, session_id, max_turns=12):
+    """Last `max_turns` (task, response) pairs for a session, oldest-first."""
+    pairs = [(t["task"], t["response"]) for t in session_turns(conn, session_id)]
+    return pairs[-max_turns:] if max_turns and max_turns > 0 else pairs
+
+
+def session_turn_count(conn, session_id):
+    return conn.execute(
+        "SELECT COUNT(*) FROM interactions WHERE session_id=?", (session_id,)
+    ).fetchone()[0]
+
+
+def touch_session(conn, session_id, project=None):
+    """Ensure a sessions row exists and bump its updated_ts. Preserves title/summary."""
+    conn.execute(
+        "INSERT INTO sessions(session_id, project) VALUES(?, ?) "
+        "ON CONFLICT(session_id) DO UPDATE SET updated_ts=CURRENT_TIMESTAMP",
+        (session_id, project),
+    )
+    # Set project only if it wasn't already set (don't clobber an explicit one).
+    if project is not None:
+        conn.execute(
+            "UPDATE sessions SET project=? WHERE session_id=? AND "
+            "(project IS NULL OR project='')",
+            (project, session_id),
+        )
+    conn.commit()
+
+
+def get_session(conn, session_id):
+    row = conn.execute(
+        "SELECT * FROM sessions WHERE session_id=?", (session_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def set_session_title(conn, session_id, title):
+    conn.execute(
+        "UPDATE sessions SET title=? WHERE session_id=?", (title, session_id)
+    )
+    conn.commit()
+
+
+def set_session_project(conn, session_id, project):
+    conn.execute(
+        "UPDATE sessions SET project=? WHERE session_id=?", (project, session_id)
+    )
+    conn.commit()
+
+
+def update_session_summary(conn, session_id, summary, summarized_through):
+    conn.execute(
+        "UPDATE sessions SET summary=?, summarized_through=? WHERE session_id=?",
+        (summary, summarized_through, session_id),
+    )
+    conn.commit()
+
+
+def list_sessions(conn, limit=20):
+    """Sessions most-recently-updated first, with live turn counts."""
+    rows = conn.execute(
+        "SELECT s.session_id, s.title, s.updated_ts, s.project, "
+        "  (SELECT COUNT(*) FROM interactions i WHERE i.session_id=s.session_id) "
+        "  AS turn_count "
+        "FROM sessions s ORDER BY s.updated_ts DESC, s.rowid DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def find_session(conn, prefix):
+    """Resolve a session by exact id, then by a case-insensitive title prefix."""
+    row = conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id=?", (prefix,)
+    ).fetchone()
+    if row:
+        return row[0]
+    row = conn.execute(
+        "SELECT session_id FROM sessions WHERE lower(title) LIKE lower(?) "
+        "ORDER BY updated_ts DESC LIMIT 1",
+        (prefix + "%",),
+    ).fetchone()
+    return row[0] if row else None
+
+
+# --- semantic recall over past interactions --------------------------------
+
+def good_interactions_with_embeddings(conn, exclude_session=None):
+    """Past interactions that had a positive outcome and carry a task embedding.
+
+    'Good' = any recorded outcome with reward > 0 (mirrors reward.is_good without
+    importing reward here). Optionally excludes an in-flight session.
+    """
+    sql = (
+        "SELECT DISTINCT i.id, i.task, i.response, i.task_embedding, i.session_id "
+        "FROM interactions i JOIN outcomes o ON o.interaction_id = i.id "
+        "WHERE o.reward > 0 AND i.task_embedding IS NOT NULL"
+    )
+    params = ()
+    if exclude_session:
+        sql += " AND (i.session_id IS NULL OR i.session_id != ?)"
+        params = (exclude_session,)
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- project facts ---------------------------------------------------------
+
+def add_fact(conn, fact_id, project, text, embedding=None):
+    conn.execute(
+        "INSERT INTO facts(id, project, text, embedding) VALUES(?, ?, ?, ?)",
+        (fact_id, project, text, embedding),
+    )
+    conn.commit()
+
+
+def facts_for_project(conn, project):
+    rows = conn.execute(
+        "SELECT id, project, text, embedding FROM facts WHERE project=? "
+        "ORDER BY ts ASC, rowid ASC",
+        (project,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_facts(conn, project):
+    return conn.execute(
+        "SELECT COUNT(*) FROM facts WHERE project=?", (project,)
+    ).fetchone()[0]

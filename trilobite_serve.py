@@ -91,6 +91,27 @@ def _last_user_message(messages):
     return ""
 
 
+def _history_from_messages(messages):
+    """Prior user/assistant turns from the UI request, excluding the current (last
+    user) message. The chat UI owns conversation state here, so we thread exactly
+    what it sends rather than a DB session."""
+    msgs = messages or []
+    last_user_idx = None
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            last_user_idx = i
+            break
+    history = []
+    for i, m in enumerate(msgs):
+        if i == last_user_idx:
+            continue
+        role = m.get("role")
+        content = m.get("content") or ""
+        if role in ("user", "assistant") and content:
+            history.append({"role": role, "content": content})
+    return history
+
+
 def _parse_train_n(arg):
     """Parse /train's N argument. Returns (n, error_message); n is None on error."""
     arg = (arg or "").strip()
@@ -234,11 +255,11 @@ def _handle_intent(content):
     return "\n".join(replies)
 
 
-def _run_prompt(prompt):
-    """Call the real trilobite loop; returns the text shown to the UI."""
+def _run_prompt(prompt, history=None):
+    """Call the real trilobite loop with the UI's prior turns; returns UI text."""
     global LAST_IID, LAST_RESPONSE
 
-    out = server.trilobite(prompt, trace=TRACE, strict=STRICT)
+    out = server.answer_with_history(prompt, history, trace=TRACE, strict=STRICT)
     if out.startswith("ERROR"):
         return out
     LAST_IID = server.parse_interaction_id(out)
@@ -343,6 +364,7 @@ class Handler(BaseHTTPRequestHandler):
         stream = bool(req.get("stream", False))
         model = req.get("model", "trilobite")
         prompt = _last_user_message(messages)
+        history = _history_from_messages(messages)
 
         try:
             reply = _handle_slash(prompt)
@@ -350,7 +372,7 @@ class Handler(BaseHTTPRequestHandler):
                 reply = _handle_feedback(prompt)
             if reply is None:
                 reply = _handle_intent(prompt)
-            content = reply if reply is not None else _run_prompt(prompt)
+            content = reply if reply is not None else _run_prompt(prompt, history)
         except Exception:
             content = "ERROR: %s" % traceback.format_exc()
 
