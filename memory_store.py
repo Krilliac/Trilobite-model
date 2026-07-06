@@ -143,6 +143,18 @@ def get_lesson_text(conn, lesson_id):
     return row[0] if row else None
 
 
+def delete_lesson(conn, lesson_id):
+    """Remove a lesson from both the lessons table and its manual FTS mirror.
+
+    Returns True if a row was deleted. lessons_fts is a plain (non-content) fts5
+    table with no delete triggers, so its row must be removed explicitly.
+    """
+    cur = conn.execute("DELETE FROM lessons WHERE id=?", (lesson_id,))
+    conn.execute("DELETE FROM lessons_fts WHERE lesson_id=?", (lesson_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def _sanitize_fts(query):
     # FTS5 MATCH chokes on raw punctuation; reduce to quoted word tokens OR'd together.
     toks = [t for t in re.findall(r"\w+", query.lower()) if len(t) > 2][:32]

@@ -1,4 +1,18 @@
+import embeddings as _e
 import memory_store as ms
+
+
+def test_delete_lesson_removes_from_table_and_fts():
+    c = ms.connect(":memory:")
+    ms.add_lesson(c, "L1", "Use collections.deque for O(1) pops.", _e.to_blob([1.0, 0.0]), "i1")
+    ms.add_lesson(c, "L2", "Memoize with functools.lru_cache.", _e.to_blob([0.0, 1.0]), "i2")
+    assert ms.delete_lesson(c, "L1") is True
+    assert ms.get_lesson_text(c, "L1") is None
+    assert [l["id"] for l in ms.all_lessons(c)] == ["L2"]
+    # gone from the FTS mirror too (deque token no longer matches)
+    assert "L1" not in ms.fts_search(c, "deque pops")
+    # deleting a missing id is a harmless no-op
+    assert ms.delete_lesson(c, "nope") is False
 
 
 def _conn():

@@ -14,6 +14,45 @@ def test_distill_strips_and_returns_text():
     assert out == "Release the lock in a finally block."
 
 
+def test_distill_uses_the_code_tier_not_the_weak_fast_tier():
+    seen = {}
+
+    def _capture(**kw):
+        seen.update(kw)
+        return "Use collections.deque for O(1) appends and pops from both ends."
+
+    reflection.distill("task", "resp", "tests_passed", _capture)
+    assert seen.get("tier") == "code"
+
+
+def test_distill_rejects_vague_platitudes():
+    # A generic, non-actionable "lesson" must be dropped rather than stored.
+    for platitude in (
+        "Use the standard library effectively.",
+        "Use classes for game entities and manage their states efficiently.",
+        "Use a grid-based approach for snake movement and collisions efficiently.",
+        "Follow best practices and write clean, readable code.",
+    ):
+        out = reflection.distill("t", "r", "tests_passed", lambda **kw: platitude)
+        assert out == "", "expected platitude to be rejected: %r" % platitude
+
+
+def test_distill_keeps_specific_actionable_lessons():
+    for good in (
+        "Release the lock in a finally block.",
+        "Use collections.deque for O(1) pops from both ends of a queue.",
+        "Guard against ZeroDivisionError before dividing by a user-supplied value.",
+    ):
+        out = reflection.distill("t", "r", "tests_passed", lambda **kw: good)
+        assert out == good
+
+
+def test_looks_vague_flags_platitudes_and_passes_specifics():
+    assert reflection._looks_vague("Use appropriate data structures efficiently.")
+    assert reflection._looks_vague("Manage state properly.")
+    assert not reflection._looks_vague("Memoize nth_fibonacci with functools.lru_cache.")
+
+
 def test_maybe_add_lesson_writes_one_lesson():
     c = ms.connect(":memory:")
     lid = reflection.maybe_add_lesson(
