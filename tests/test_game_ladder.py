@@ -156,6 +156,22 @@ def test_ground_capture_returns_full_traceback_for_repair():
     assert "ValueError" in reason  # short reason still classifies
 
 
+def test_build_level_with_repair_autofixes_missing_import(monkeypatch):
+    # a game that forgets `import random` should be recovered mechanically on the
+    # first attempt, with NO model repair round-trip.
+    calls = {"n": 0}
+
+    def gen_fn(prompt):
+        calls["n"] += 1
+        return "```python\nprint(random.randint(1, 1))\n```"  # missing import random
+
+    res = game_ladder.build_level_with_repair(
+        {"name": "g", "kind": "console", "prompt": "p"}, gen_fn, max_attempts=3)
+    assert res["passed"] is True
+    assert res["attempts"] == 1
+    assert calls["n"] == 1  # fixed without asking the model again
+
+
 def test_build_level_with_repair_reports_attempts(monkeypatch):
     monkeypatch.setattr(game_ladder, "ground", lambda c, k, timeout=15: (True, "ran clean"))
     res = game_ladder.build_level_with_repair(

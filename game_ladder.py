@@ -16,6 +16,7 @@ import sys
 import tempfile
 
 import grounding
+import import_autofix
 import solver
 
 PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "Scripts", "python.exe")
@@ -257,6 +258,15 @@ def build_level_with_repair(level, gen_fn, max_attempts=3):
             continue
         last_code = code
         passed, detail, full = _ground_capture(code, kind)
+        if not passed:
+            # cheap mechanical recovery: a forgotten stdlib import (the classic
+            # breakout `NameError: name 'random'`) is patched + re-run for free,
+            # before spending a model repair round-trip.
+            fixed = import_autofix.fix_missing_imports(code, full)
+            if fixed != code:
+                p2, d2, f2 = _ground_capture(fixed, kind)
+                if p2:
+                    code, passed, detail, full = fixed, p2, d2, f2
         if passed:
             return {"code": code, "passed": True, "detail": detail, "attempts": attempt}
         # real crash -> hand the model its own failing code + the FULL traceback
