@@ -16,6 +16,7 @@ import sys
 import tempfile
 
 import grounding
+import solver
 
 PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "Scripts", "python.exe")
 
@@ -225,6 +226,62 @@ def run_ladder(gen_fn, start=1, max_levels=99, save_dir="games", record=None):
     return {"reached": last_n, "failed_level": None}
 
 
+def build_level_with_repair(level, gen_fn, max_attempts=3):
+    """Generate a game for `level`, ground it headless, and on a REAL crash feed
+    the traceback back to the model and regenerate (reflexion) up to max_attempts.
+
+    Games have no assert-check — the verifier is ground() ("does it run without an
+    unexpected crash"), so this is solver.solve()'s repair pattern specialized to
+    the ladder's crash-based grounding. Returns
+    {code, passed, detail, attempts}.
+    """
+    prompt, kind = level["prompt"], level["kind"]
+    cur = prompt
+    last_code, detail = None, "no code block"
+    for attempt in range(1, max_attempts + 1):
+        code = grounding.extract_code_block(gen_fn(cur))
+        if not code:
+            detail = "no code block"
+            cur = solver._repair_prompt(
+                prompt, last_code,
+                "Your reply had no python code block. Return the COMPLETE program in ONE python code block.")
+            continue
+        last_code = code
+        passed, detail = ground(code, kind)
+        if passed:
+            return {"code": code, "passed": True, "detail": detail, "attempts": attempt}
+        # real crash -> hand the model its own failing code + the traceback to fix
+        cur = solver._repair_prompt(prompt, code, detail)
+    return {"code": last_code, "passed": False, "detail": detail, "attempts": max_attempts}
+
+
+def run_ladder_repair(gen_fn, start=1, max_levels=99, save_dir="games",
+                      record=None, max_attempts=3):
+    """Like run_ladder, but each level gets up to max_attempts self-repair tries
+    (generate -> ground -> feed the crash back) before it counts as a failure.
+    Stops at the first level that fails even after repair.
+    """
+    levels = [l for l in LEVELS if l["n"] >= start][:max_levels]
+    last_n = start - 1
+    for level in levels:
+        n, name = level["n"], level["name"]
+        res = build_level_with_repair(level, gen_fn, max_attempts=max_attempts)
+        code, passed, detail, attempts = res["code"], res["passed"], res["detail"], res["attempts"]
+        if code:
+            level_dir = os.path.join(save_dir, "level_%02d_%s" % (n, name))
+            os.makedirs(level_dir, exist_ok=True)
+            with open(os.path.join(level_dir, "game.py"), "w", encoding="utf-8") as f:
+                f.write(code)
+        if record:
+            record(level, passed, code)
+        print("LEVEL %d %s: %s (attempt %d/%d) %s %s" % (
+            n, name, "PASS" if passed else "FAIL", attempts, max_attempts, "-", detail))
+        if not passed:
+            return {"reached": last_n, "failed_level": level, "detail": detail}
+        last_n = n
+    return {"reached": last_n, "failed_level": None}
+
+
 if __name__ == "__main__":
     # Live driver — needs Ollama/GPU. Do not run this in automated tests.
     import server
@@ -232,7 +289,9 @@ if __name__ == "__main__":
     _last_raw = {"text": None}
 
     def gen_fn(prompt):
-        text = server.trilobite(prompt, num_predict=2048)
+        # session="none": each call is single-turn; the repair context (prior code
+        # + traceback) is embedded in the prompt itself, so no thread to balloon.
+        text = server.trilobite(prompt, session="none", num_ctx=6144, num_predict=4096)
         _last_raw["text"] = text
         return text
 
@@ -245,7 +304,8 @@ if __name__ == "__main__":
     start = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     max_levels = int(sys.argv[2]) if len(sys.argv) > 2 else 99
 
-    result = run_ladder(gen_fn, start=start, max_levels=max_levels, record=record)
+    result = run_ladder_repair(gen_fn, start=start, max_levels=max_levels,
+                               record=record, max_attempts=3)
 
     reached = result["reached"]
     failed_level = result["failed_level"]
