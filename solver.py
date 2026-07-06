@@ -71,6 +71,107 @@ def solve(prompt, check, generate_fn, run_code_fn=grounding.run_code,
     return {"passed": False, "code": last_code, "attempts": max_attempts, "transcript": transcript}
 
 
+# --- cross-model critique: a DIFFERENT model reviews the failing code -----------
+# A single frozen model tends to re-emit its own buggy answer (it can't see its
+# blind spot). An independent critic model supplies the diversity same-model
+# repair lacks: it diagnoses the root cause, and that diagnosis steers the fix.
+CRITIQUE_TEMPLATE = (
+    "You are a strict code reviewer. The task:\n{original}\n\n"
+    "This candidate solution FAILED its tests:\n```python\n{code}\n```\n\n"
+    "Failing output:\n{error}\n\n"
+    "In 1-3 sentences, state the SPECIFIC root-cause bug and the concrete fix. "
+    "Diagnose precisely; do not rewrite the whole solution."
+)
+REPAIR_WITH_CRITIQUE = (
+    "{original}\n\n"
+    "Your previous attempt:\n```python\n{code}\n```\n"
+    "failed its tests. An independent reviewer diagnosed the bug:\n{critique}\n\n"
+    "Apply that fix and return a corrected, COMPLETE solution in ONE python code "
+    "block. No prose outside the code block."
+)
+
+
+def critique_prompt(original, code, error):
+    return CRITIQUE_TEMPLATE.format(original=original, code=code or "",
+                                    error=(error or "").strip()[:1500])
+
+
+def _repair_with_critique(original, code, critique):
+    return REPAIR_WITH_CRITIQUE.format(original=original, code=code or "",
+                                       critique=(critique or "").strip()[:1500])
+
+
+def _try(fn, *a):
+    try:
+        return fn(*a), None
+    except Exception as e:  # a dead model round-trip is a failed step, not a crash
+        return None, "%r" % (e,)
+
+
+def solve_with_critic(prompt, check, gen_fn, critic_fn, run_code_fn=grounding.run_code,
+                      extract_fn=grounding.extract_code_block, max_attempts=3):
+    """Generator+critic loop: gen_fn writes code; on a failed check, critic_fn (a
+    DIFFERENT model) diagnoses the root cause, and that critique steers gen_fn's
+    next attempt. Returns {passed, code, attempts, transcript}; each transcript
+    entry also carries the `critique` that produced the following attempt.
+    """
+    transcript = []
+    cur_prompt = prompt
+    last_code = None
+    for attempt in range(1, max_attempts + 1):
+        resp, gerr = _try(gen_fn, cur_prompt)
+        code = extract_fn(resp) if resp is not None else None
+        if code is None:
+            transcript.append({"attempt": attempt, "code": None, "ok": False,
+                               "output": gerr or "no code block", "critique": None})
+            cur_prompt = _repair_prompt(prompt, last_code, NO_CODE_HINT)
+            continue
+        last_code = code
+        ok, out = run_code_fn(code, check)
+        entry = {"attempt": attempt, "code": code, "ok": ok, "output": out, "critique": None}
+        if ok:
+            transcript.append(entry)
+            return {"passed": True, "code": code, "attempts": attempt, "transcript": transcript}
+        crit, _ = _try(critic_fn, critique_prompt(prompt, code, out))
+        entry["critique"] = crit or ""
+        transcript.append(entry)
+        cur_prompt = _repair_with_critique(prompt, code, crit or out)
+    return {"passed": False, "code": last_code, "attempts": max_attempts, "transcript": transcript}
+
+
+def rotate_solve(prompt, check, gen_fns, run_code_fn=grounding.run_code,
+                 extract_fn=grounding.extract_code_block, max_attempts=None):
+    """Like solve(), but ROTATES through gen_fns (one model per attempt), each
+    model seeing the prior one's failing code+error. Cross-model repair without a
+    separate critic role: whichever model is up next brings a fresh distribution.
+    max_attempts defaults to len(gen_fns) (one shot per model).
+    """
+    n = len(gen_fns)
+    if n == 0:
+        raise ValueError("rotate_solve needs at least one generator")
+    max_attempts = max_attempts if max_attempts is not None else n
+    transcript = []
+    cur_prompt = prompt
+    last_code = None
+    for attempt in range(1, max_attempts + 1):
+        g = gen_fns[(attempt - 1) % n]
+        resp, gerr = _try(g, cur_prompt)
+        code = extract_fn(resp) if resp is not None else None
+        if code is None:
+            transcript.append({"attempt": attempt, "model": (attempt - 1) % n,
+                               "code": None, "ok": False, "output": gerr or "no code block"})
+            cur_prompt = _repair_prompt(prompt, last_code, NO_CODE_HINT)
+            continue
+        last_code = code
+        ok, out = run_code_fn(code, check)
+        transcript.append({"attempt": attempt, "model": (attempt - 1) % n,
+                           "code": code, "ok": ok, "output": out})
+        if ok:
+            return {"passed": True, "code": code, "attempts": attempt, "transcript": transcript}
+        cur_prompt = _repair_prompt(prompt, code, out)
+    return {"passed": False, "code": last_code, "attempts": max_attempts, "transcript": transcript}
+
+
 def best_of_n(prompt, generate_fn, check="", run_code_fn=grounding.run_code,
               extract_fn=grounding.extract_code_block, n=3):
     """Sample n independent candidates; return the first that runs green.

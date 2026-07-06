@@ -77,3 +77,49 @@ def test_best_of_n_falls_back_when_none_pass():
     res = solver.best_of_n("write f", generate_fn=lambda p: BAD, check=CHECK, run_code_fn=_runner, n=2)
     assert res["passed"] is False
     assert res["code"] is not None
+
+
+def test_solve_with_critic_uses_diagnosis_to_repair():
+    critic_calls = {"n": 0}
+
+    def critic(p):
+        critic_calls["n"] += 1
+        return "f returns 0 but must return 1; change the literal."
+
+    # generator emits GOOD only once it has seen the critic's diagnosis
+    def gen(p):
+        return GOOD if "reviewer diagnosed" in p else BAD
+
+    res = solver.solve_with_critic("write f", CHECK, gen_fn=gen, critic_fn=critic, run_code_fn=_runner)
+    assert res["passed"] is True
+    assert res["attempts"] == 2
+    assert critic_calls["n"] == 1
+    assert "return 1" in res["transcript"][0]["critique"]
+
+
+def test_solve_with_critic_skips_critic_on_first_pass():
+    called = {"n": 0}
+
+    def critic(p):
+        called["n"] += 1
+        return "x"
+
+    res = solver.solve_with_critic("write f", CHECK, gen_fn=lambda p: GOOD, critic_fn=critic, run_code_fn=_runner)
+    assert res["passed"] is True
+    assert called["n"] == 0  # never invoked the critic
+
+
+def test_rotate_solve_second_model_fixes_first():
+    # model 0 always wrong, model 1 right — rotation reaches a pass on attempt 2
+    gens = [lambda p: BAD, lambda p: GOOD]
+    res = solver.rotate_solve("write f", CHECK, gen_fns=gens, run_code_fn=_runner)
+    assert res["passed"] is True
+    assert res["attempts"] == 2
+    assert res["transcript"][1]["model"] == 1
+
+
+def test_rotate_solve_fails_when_all_models_wrong():
+    gens = [lambda p: BAD, lambda p: BAD]
+    res = solver.rotate_solve("write f", CHECK, gen_fns=gens, run_code_fn=_runner, max_attempts=4)
+    assert res["passed"] is False
+    assert res["attempts"] == 4
